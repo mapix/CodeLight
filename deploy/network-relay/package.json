@@ -1,0 +1,10 @@
+{
+  "name": "codelight-public-network-relay",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "8.22.0",
+    "tweetnacl": "1.0.3"
+  }
+}

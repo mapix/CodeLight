@@ -1,0 +1,9 @@
+Use case: logo-brand
+Asset type: transparent CodeLight horizontal logo lockup.
+Primary request: A polished, original logo for CodeLight, a phone companion for ongoing desktop coding agent sessions.
+Subject: on the left one compact terminal-bracket/lightning bridge symbol, on the right the exact word "CodeLight" with this capitalization, spelled C o d e L i g h t.
+Style: precise royal-blue and cyan brand mark with a restrained, well-spaced modern sans-serif wordmark, professional native software, no mockup or extraneous decoration.
+Composition: generous clear padding around a centered horizontal lockup, 3:2 landscape image, readable clean silhouette.
+Scene/backdrop: genuinely transparent PNG background.
+Constraints: exact text CodeLight only; no slogans, no other words, no watermark, no OpenAI/Cloudflare or other vendor logos.
+Reference image: app-icon-v1.png, use its exact terminal-bracket/lightning geometry as the brand mark. Retain the icon geometry; change the white brackets to royal blue for legibility on light backgrounds. Remove the solid blue square canvas. The cyan lightning remains cyan. Place the mark to the left of the navy CodeLight wordmark.

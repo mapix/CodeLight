@@ -1,0 +1,18 @@
+title = "CodeLight source release secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "CocoaPods integrity digests are public checksums, not API keys"
+condition = "AND"
+paths = ['''(^|/)apps/mobile/ios/Podfile\.lock$''']
+regexTarget = "line"
+regexes = ['''^\s+[A-Za-z0-9_./-]+:\s+[a-f0-9]{40}\s*$''']
+
+[[allowlists]]
+description = "Fixed derivation outputs for the public test seed"
+condition = "AND"
+paths = ['''(^|/)apps/mobile/sources/encryption/deriveKey\.appspec\.ts$''']
+regexTarget = "line"
+regexes = ['''^\s*expected(?:Root|Child|Final)(?:Key|ChainCode):\s*'[A-F0-9]{64}'[,]?\s*$''']

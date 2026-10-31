@@ -1,0 +1,24 @@
+{
+  "model": "gpt-image-2.5-flare",
+  "createdAt": "2026-10-31T01:45:56.924740+00:00",
+  "assets": [
+    {
+      "file": "app-icon-v1.png",
+      "prompt": "prompts/app-icon.txt",
+      "sha256": "9766370b8ed37b0213233dd8869d197c915d807956259392c262e4670f2091ed",
+      "postprocessing": "Derived platform assets preserve original generation; alpha trim and native icon sizes only."
+    },
+    {
+      "file": "wordmark-v1.png",
+      "prompt": "prompts/wordmark.txt",
+      "sha256": "badf9ee7d9a46a95229905acb51087eb9511bc9673e9978efd5ab6970cb74d13",
+      "postprocessing": "Derived platform assets preserve original generation; alpha trim and native icon sizes only."
+    },
+    {
+      "file": "connection-v1.png",
+      "prompt": "prompts/connection.txt",
+      "sha256": "9cbc2fd57f453cd849b6d04a7770bfe689e7a1798053c21a24ab780fabafa1a6",
+      "postprocessing": "Derived platform assets preserve original generation; alpha trim and native icon sizes only."
+    }
+  ]
+}

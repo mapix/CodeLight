@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#eef3f8">
+  <title>随行 · 桌面会话</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <section id="pair" class="pair-screen" hidden>
+    <div class="pair-card">
+      <div class="wordmark">随行<span>桌面会话</span></div>
+      <h1>把桌面的会话<br>带在身边。</h1>
+      <p>输入本机服务显示的配对码，连接你的电脑。</p>
+      <form id="pair-form">
+        <label for="pair-code">配对码</label>
+        <input id="pair-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" required placeholder="8 位数字">
+        <button type="submit" class="primary">连接电脑 <span aria-hidden="true">↗</span></button>
+      </form>
+      <p id="pair-error" class="error" role="alert"></p>
+      <small>会话继续在你的桌面应用中运行。</small>
+    </div>
+  </section>
+  <div id="workspace" class="workspace" hidden>
+    <header class="app-header">
+      <button id="back" class="icon-button" aria-label="返回会话列表" hidden>←</button>
+      <div class="wordmark">随行<span>桌面会话</span></div>
+      <button id="refresh" class="icon-button" aria-label="刷新连接和会话">↻</button>
+    </header>
+    <aside id="directory" class="directory">
+      <nav class="app-tabs" aria-label="桌面应用">
+        <button data-app="codex" class="selected"><span class="app-icon codex">C</span>Codex</button>
+        <button data-app="zcode"><span class="app-icon zcode">Z</span>ZCode</button>
+      </nav>
+      <div class="source-status"><span id="connection-dot" class="dot"></span><span id="connection">正在连接电脑…</span></div>
+      <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="查找会话" aria-label="查找会话"></label>
+      <div class="section-label">最近会话</div>
+      <div id="session-list" class="session-list"></div>
+      <button id="more" class="more" hidden>加载更多会话</button>
+      <p id="list-error" class="error" role="alert"></p>
+      <button id="launch-zcode" class="primary" type="button" hidden>在电脑打开 ZCode</button>
+      <button id="show-zcode" class="primary" type="button" hidden>显示 ZCode 桌面窗口</button>
+    </aside>
+    <main id="conversation" class="conversation">
+      <div id="empty" class="empty"><div class="connection-mark" aria-hidden="true">C<span>↔</span>Z</div><h2>选一个会话，继续工作。</h2><p>桌面与手机操作同一会话。</p></div>
+      <div id="chat" class="chat" hidden>
+        <div class="chat-heading"><div><h1 id="session-title"></h1><div id="session-workspace" class="session-workspace"></div></div><span id="live-status" class="live-status">读取中</span></div>
+        <div id="messages" class="messages" aria-live="polite" aria-relevant="additions text"></div>
+        <div id="window-mirror" class="window-mirror" hidden></div>
+        <details id="native-details" class="native-details" hidden><summary>桌面实时状态</summary><pre id="native-state"></pre></details>
+        <div id="requests" class="requests"></div>
+        <div id="action-error" class="action-error" role="alert"></div>
+        <button id="check-receipt" class="receipt-button" type="button" hidden>检查原操作结果</button>
+        <form id="composer" class="composer">
+          <label class="sr-only" for="prompt">发送到桌面会话</label>
+          <textarea id="prompt" placeholder="继续这个会话…" rows="2" maxlength="60000"></textarea>
+          <div class="composer-actions"><span id="delivery-note">发送到原桌面会话</span><div><select id="delivery" aria-label="输入方式"><option value="send">发送</option><option value="steer" disabled>本轮引导</option></select><button type="button" id="stop" class="stop-button" disabled>停止</button><button id="send" class="primary send-button" type="submit" disabled>发送 ↗</button></div></div>
+        </form>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

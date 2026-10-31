@@ -1,0 +1,13 @@
+# Restricted-network alternative: supply an official Node Linux musl binary
+# verified against Node's SHASUMS256.txt and a digest-verified nginx Alpine base.
+ARG BASE_IMAGE=ghcr.io/nginx/nginx-unprivileged:stable-alpine
+FROM ${BASE_IMAGE}
+COPY node /usr/local/bin/node
+WORKDIR /app
+COPY package.json ./
+COPY node_modules/ ./node_modules/
+COPY src/network/ ./src/network/
+USER 1000:1000
+EXPOSE 8081
+ENTRYPOINT ["node"]
+CMD ["src/network/relay-main.mjs"]

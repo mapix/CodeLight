@@ -1,0 +1,33 @@
+{
+  "sample": {
+    "catalog": 1347,
+    "history": 10000,
+    "updates": 1000,
+    "markdownChars": 205000
+  },
+  "catalogSelectionTotalMs": {
+    "before": 17.247,
+    "after": 0.067
+  },
+  "lifecycleArrayProcessingMs": {
+    "before": 32.905,
+    "after": 0.142
+  },
+  "initialWindowRows": {
+    "before": 10000,
+    "after": 120
+  },
+  "initialMarkdownChars": {
+    "before": 205000,
+    "after": 8000
+  },
+  "recordRequestBudget": {
+    "before": 600,
+    "after": 50
+  },
+  "observerPostsFor120Records": {
+    "before": 120,
+    "after": 3
+  },
+  "scope": "Synthetic CPU work and request budgets; not iPhone thermal/FPS measurements"
+}

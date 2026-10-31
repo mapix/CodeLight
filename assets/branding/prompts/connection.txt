@@ -1,0 +1,7 @@
+Use case: illustration-story
+Asset type: CodeLight phone onboarding illustration.
+Primary request: Create a quiet, compact product illustration of a phone linking to an existing Mac coding session through a QR card.
+Subject: a simple phone silhouette and a simple desktop window with two terminal-like text lines, connected by one short cyan light stroke; a small QR-like card between them. No real scannable code is needed.
+Style: refined flat shapes, precise geometry, royal blue/cyan with pale cool-gray surroundings, friendly native software, restrained depth.
+Composition: centered small composition with ample empty space, square image, no text, no characters, no mockup frame, no watermark or vendor logos.
+Scene/backdrop: transparent PNG background.

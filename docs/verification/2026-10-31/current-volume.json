@@ -1,0 +1,18 @@
+{
+  "sessions": 1347,
+  "catalogPages": 7,
+  "fullCatalogBytes": 3213075,
+  "warmDeltaFirstPageBytes": 2859,
+  "warmDeltaFirstPageRows": 1,
+  "activeObservers": [
+    {
+      "checkpointBytes": 31260982
+    },
+    {
+      "checkpointBytes": 11426742
+    },
+    {
+      "checkpointBytes": 7398458
+    }
+  ]
+}

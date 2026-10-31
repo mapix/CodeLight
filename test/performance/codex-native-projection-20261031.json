@@ -1,0 +1,101 @@
+{
+  "node": "v24.15.0",
+  "canonicalHistory": true,
+  "turnCount": 1000,
+  "rows": 20000,
+  "stateBytes": 26548417,
+  "repetitions": 40,
+  "completeConsumerClone": true,
+  "fullSnapshotJsonDecodeIncluded": true,
+  "heapMetric": "observed peak growth and post-GC retained delta; not allocated bytes",
+  "results": [
+    {
+      "name": "previous",
+      "scenario": "stdout",
+      "hash": "8dc36ab7bd05501418208924f6b998ca41c417b3f056e41d56bb2d02d1ea9bfa",
+      "elapsedMs": 5944.477459000001,
+      "cpuMs": 7590.253,
+      "heapBeforeBytes": 120709016,
+      "observedHeapGrowthBytes": 547332744,
+      "retainedHeapDeltaBytes": -1139416,
+      "projectedItems": null,
+      "serializedRowBytes": null
+    },
+    {
+      "name": "current",
+      "scenario": "stdout",
+      "hash": "26f0a0f3b43355a3e42cd7952c5cb18b48306a5507b2778d673bc70747f9e61d",
+      "elapsedMs": 2353.7739170000004,
+      "cpuMs": 2991.339,
+      "heapBeforeBytes": 124992304,
+      "observedHeapGrowthBytes": 593341352,
+      "retainedHeapDeltaBytes": 4392,
+      "projectedItems": 40,
+      "serializedRowBytes": 49070
+    },
+    {
+      "name": "previous",
+      "scenario": "status",
+      "hash": "8dc36ab7bd05501418208924f6b998ca41c417b3f056e41d56bb2d02d1ea9bfa",
+      "elapsedMs": 6132.731958,
+      "cpuMs": 7624.017,
+      "heapBeforeBytes": 119791320,
+      "observedHeapGrowthBytes": 701139488,
+      "retainedHeapDeltaBytes": 8848,
+      "projectedItems": null,
+      "serializedRowBytes": null
+    },
+    {
+      "name": "current",
+      "scenario": "status",
+      "hash": "26f0a0f3b43355a3e42cd7952c5cb18b48306a5507b2778d673bc70747f9e61d",
+      "elapsedMs": 1760.0912079999998,
+      "cpuMs": 2307.599,
+      "heapBeforeBytes": 125059800,
+      "observedHeapGrowthBytes": 590742248,
+      "retainedHeapDeltaBytes": -38640,
+      "projectedItems": 0,
+      "serializedRowBytes": 0
+    },
+    {
+      "name": "previous",
+      "scenario": "stdout-snapshot",
+      "hash": "8dc36ab7bd05501418208924f6b998ca41c417b3f056e41d56bb2d02d1ea9bfa",
+      "elapsedMs": 8134.565665999999,
+      "cpuMs": 10839.769,
+      "heapBeforeBytes": 119755440,
+      "observedHeapGrowthBytes": 984289632,
+      "retainedHeapDeltaBytes": 39474056,
+      "projectedItems": null,
+      "serializedRowBytes": null
+    },
+    {
+      "name": "current",
+      "scenario": "stdout-snapshot",
+      "hash": "26f0a0f3b43355a3e42cd7952c5cb18b48306a5507b2778d673bc70747f9e61d",
+      "elapsedMs": 4265.5143750000025,
+      "cpuMs": 5810.885,
+      "heapBeforeBytes": 164564720,
+      "observedHeapGrowthBytes": 638440984,
+      "retainedHeapDeltaBytes": 53152,
+      "projectedItems": 40,
+      "serializedRowBytes": 49070
+    }
+  ],
+  "verification": {
+    "backendTests": {
+      "passed": 35,
+      "failed": 0,
+      "benchmarkSkippedInNormalSuite": 1
+    },
+    "standaloneBenchmarkPassed": true,
+    "rootTypecheck": "passed with Node 24.15.0",
+    "rootLint": "passed with Node 24.15.0"
+  },
+  "limitations": [
+    "Synthetic host benchmark, not iPhone energy or thermal evidence.",
+    "One independent complete consumer view clone per update remains included.",
+    "Heap observations depend on GC and are not cumulative allocated bytes.",
+    "Same-owner snapshots still validate every source field; first snapshots and owner changes start fresh."
+  ]
+}

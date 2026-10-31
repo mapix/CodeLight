@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-31",
+  "product": "CodeLight",
+  "version": "0.3.0",
+  "mobileAppVersion": "1.8.0",
+  "iphoneBuild": "2026103110",
+  "iphoneInstalledBuild": "2026103110",
+  "macInstalled": true,
+  "iphoneInstalled": true,
+  "phoneLaunch": "Installed, launched and verified in CoreDevice app inventory.",
+  "phoneSessionStatuses": "User confirmed individual session statuses after scanning the updated Mac QR.",
+  "macDashboard": "Native UI verified paired Statistics default, panel switching, renewal and live traffic/RPC/device counters.",
+  "macSignature": "Developer ID; six native binaries verified; staged and installed bundles passed deep strict verification.",
+  "installedBridge": "Installed bundled service matches a fresh bundle of current source.",
+  "originalCodexRestarted": false,
+  "originalOwnerIdentity": "Verified unchanged before and after CodeLight replacement.",
+  "targetedBridgeTests": 140,
+  "mobileTargetedTests": 74,
+  "benchmark": "Executed separately; one normal-suite benchmark skipped.",
+  "typecheck": "passed: bridge/mobile/production relay",
+  "lint": "passed",
+  "sourceInstall": "Verified in an extracted standalone workspace: frozen pnpm lockfile, daemon help, explicit Expo preset, bridge/mobile/production-relay types.",
+  "trafficScope": "Owned gateway HTTP/WebSocket interface bytes; no external TLS/IP/ISP overhead or model tokens.",
+  "thermalAndFrameRate": "unmeasured",
+  "notarized": false,
+  "apnsAcceptance": false,
+  "artifacts": [
+    {
+      "path": "deliverables/CodeLight-Mac-20261031.zip",
+      "bytes": 108463554,
+      "sha256": "304c147653f7954b4590f7b60f9fb0eb22f1e9e00f418e277bdfb25e91d1c249"
+    },
+    {
+      "path": "deliverables/CodeLight-iPhone-2026103110.ipa",
+      "bytes": 45699939,
+      "sha256": "ff2165a089d3e32f3400d3bb327c55578f6bbf2a67ee6c13a9f8685ff522d559"
+    },
+    {
+      "path": "deliverables/CodeLight-Source.zip"
+    }
+  ],
+  "sourceFiles": 1996,
+  "privateSourcePathsExcluded": true
+}
