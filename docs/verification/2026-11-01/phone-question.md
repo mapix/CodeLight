@@ -61,3 +61,14 @@ latest message. Confirm its banner and options remain visible, explicitly submit
 once, and verify the matching original desktop reply and subsequent banner
 removal. Native scene, physical-phone and live delivery results are to be appended
 after those checks; they are not claimed by the regressions above.
+
+## Native follow-up
+
+iPhone Release build `2026110102` was installed and launched successfully. The
+same source's dedicated native simulator build showed the prompt while the
+earlier messages were visible. The prompt opened the answer sheet; single-choice
+and multiple-choice selections were reflected in the native accessibility state,
+and the explicit submit control became enabled. No preview answer was sent.
+Screenshots and accessibility observations are retained in the task evidence.
+The originally reported physical-phone prompt and its live reply remain awaiting
+user verification after a working public connection is selected.
