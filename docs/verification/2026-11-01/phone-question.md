@@ -70,5 +70,7 @@ earlier messages were visible. The prompt opened the answer sheet; single-choice
 and multiple-choice selections were reflected in the native accessibility state,
 and the explicit submit control became enabled. No preview answer was sent.
 Screenshots and accessibility observations are retained in the task evidence.
-The originally reported physical-phone prompt and its live reply remain awaiting
-user verification after a working public connection is selected.
+The user subsequently selected the owned network Relay. Native server/key
+validation, saved configuration and actual public Mac health passed; the fresh
+QR is displayed for reconnection. The originally reported physical-phone prompt
+and its live reply remain awaiting user verification on that connection.

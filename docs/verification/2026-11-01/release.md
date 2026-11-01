@@ -66,8 +66,12 @@ See [the question investigation](phone-question.md) for the conditional cause.
 At the installation check, this Mac's system resolver returned `ENOTFOUND` for
 new Cloudflare Quick Tunnel hostnames, although a separate public DNS query
 resolved them. CodeLight correctly refused to commit an unverified public entry.
-No system DNS settings or validation checks were changed. The owned network
-Relay was operational; changing this Mac's saved public-access mode was left
-pending the user's choice. This environmental result is not a claim that every
-Cloudflare installation fails. Phone thermals and a broader OS/device matrix
-were not measured in this release.
+No system DNS settings or validation checks were changed. After the user chose
+the owned network Relay, the Mac's native Public access form was used to select
+Relay and validate its server/access key. Independent HTTP/WebSocket probes
+passed, the native UI reported Connection ready, and the actual routed Mac health
+endpoint returned 200. Configuration was saved with mode 0600; the existing
+account/box keys remained byte-for-byte unchanged. The fresh QR was displayed
+for phone reconnection. Physical-phone prompt/reply confirmation remains pending.
+This environmental result is not a claim that every Cloudflare installation
+fails. Phone thermals and a broader OS/device matrix were not measured.
