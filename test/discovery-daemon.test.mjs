@@ -52,6 +52,20 @@ async function daemonFixture() {
   return { directory, source, key, options, machine, counts: () => ({ created, opened, started }), fail: (/** @type {boolean} */ value) => { fail = value; } };
 }
 
+test('without background notification observation, remembered quiescent history stays lazy while pending inbox restores', async () => {
+  const f = await daemonFixture();
+  await writeFile(join(f.directory, 'active-sources.json'), JSON.stringify({ version: 1, keys: [f.key] }));
+  let daemon = new CodeLightMacDaemon({ ...f.options, observeBackground: false });
+  try {
+    await daemon.start(); assert.equal(f.counts().created, 0); await daemon.close();
+    await mkdir(join(f.directory, 'active', f.key), { recursive: true });
+    await writeFile(join(f.directory, 'active', f.key, 'transport.json'), JSON.stringify({ inbox: [{ id: 'queued-phone-input' }], outbox: [] }));
+    daemon = new CodeLightMacDaemon({ ...f.options, observeBackground: false });
+    await daemon.start(); await Promise.all([...daemon.activating.values()]);
+    assert.equal(f.counts().created, 1); assert.equal(f.counts().opened, 0);
+  } finally { await daemon.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test('discovery stays lazy, repeated machine RPC dispatches one original open and unknown receipt never replays', async () => {
   const f = await daemonFixture(), daemon = new CodeLightMacDaemon(f.options);
   try {

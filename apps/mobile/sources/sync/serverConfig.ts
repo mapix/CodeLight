@@ -60,6 +60,14 @@ export function setServerUrl(url: string | null): void {
     }
 }
 
+/** Only the authenticated same-peer channel owner can keep this runtime while changing its route. */
+export function commitPeerServerUrl(url: string): void {
+    const origin = normalizeServerOrigin(url);
+    serverConfigStorage.set(SERVER_KEY, origin);
+    // 原 getter 冻结的是旧通道；写 MMKV 不会改变已运行的网络请求来源。
+    runtimeServerUrl = origin;
+}
+
 export function shouldUseCustomServerForVoice(): boolean {
     return isUsingCustomServer() && serverConfigStorage.getBoolean(USE_CUSTOM_SERVER_FOR_VOICE_KEY) === true;
 }

@@ -33,6 +33,14 @@ export class SourceImageAdapter {
     return frame.native ? { ...frame, native: mapped } : mapped;
   }
   /** @param {string} id */ async snapshot(id) { return this.transform(await this.adapter.snapshot(id)); }
+  /** @param {string} id */ async freshSnapshot(id) {
+    if (typeof this.adapter.freshSnapshot !== 'function') throw new BridgeError('fresh-snapshot-unavailable', 'The original adapter cannot confirm a fresh snapshot.');
+    return this.transform(await this.adapter.freshSnapshot(id));
+  }
+  /** @param {string} id */ async completeSnapshot(id) {
+    if (typeof this.adapter.completeSnapshot !== 'function') throw new BridgeError('history-unavailable', 'The original adapter cannot load earlier saved history.');
+    return this.transform(await this.adapter.completeSnapshot(id));
+  }
   /** @param {string} id @param {(frame:Value)=>void} callback */
   async subscribe(id, callback) {
     let closed = false, running = false;
@@ -79,7 +87,8 @@ export async function createBoundSource(options) {
   try {
     connector = new NativeHappyConnector({ transport, adapter, nativeId: binding.source.id, sourceIdentity: binding.source, bindingId: `codelight:${binding.happySessionId}`,
       metadata: binding.metadata, encryptionKey: key, statePath: join(options.directory, 'projection.json'), receipts: await CommandReceipts.load(join(options.directory, 'receipts.json')),
-      getGeneration: () => adapter.generation(binding.source.id), assertLease: () => ownsLease && !closed && (options.assertHostLease?.() ?? true), supportsNativeProjection: true });
+      getGeneration: () => adapter.generation(binding.source.id), assertLease: () => ownsLease && !closed && (options.assertHostLease?.() ?? true), supportsNativeProjection: true,
+      recentRowLimit: binding.source.app === 'codex' ? 100 : undefined });
   } catch (error) { await transport.close(); await releaseLease(); throw error; }
   const close = () => {
     if (!closeFlight) {

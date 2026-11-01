@@ -54,7 +54,8 @@ export function startSocket(app: Fastify) {
     // callback creates a window where client events (rpc-register, rpc-call)
     // arrive before handlers are attached — and get silently dropped.
     io.use(async (socket, next) => {
-        const token = socket.handshake.auth.token as string;
+        // 原生内网设备证明由 Mac gateway 解封；真实 token 只出现在 owned loopback header。
+        const token = (socket.handshake.auth.token || socket.handshake.headers.authorization?.replace(/^Bearer /, '')) as string;
         const clientType = socket.handshake.auth.clientType as 'session-scoped' | 'user-scoped' | 'machine-scoped' | undefined;
         const sessionId = socket.handshake.auth.sessionId as string | undefined;
         const machineId = socket.handshake.auth.machineId as string | undefined;

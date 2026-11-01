@@ -5,6 +5,7 @@ export interface CodeLightBackgroundCache {
     scope: string;
     updatedAt: number;
     catalogWatermark?: number;
+    peerCatalogCiphertext?: string;
     sessions: unknown[];
     selected: string[];
     messages: Record<string, { seq: number; records: CodeLightEncryptedMessage[] }>;

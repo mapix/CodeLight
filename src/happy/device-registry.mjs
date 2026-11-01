@@ -11,6 +11,8 @@ export class DeviceRegistry extends EventEmitter {
   list() { return this.rows.map(row => ({ id: row.id, name: row.name, createdAt: row.createdAt, lastSeen: row.lastSeen, revoked: row.revoked,
     connected: (this.sockets.get(row.id)?.size ?? 0) > 0, notifications: !row.revoked && row.push?.enabled === true })).sort((a, b) => b.lastSeen - a.lastSeen); }
   notificationDevices() { return this.rows.filter(row => !row.revoked && row.push?.enabled && row.push?.token); }
+  /** @param {string} id @returns {string|null} */
+  publicKey(id) { return this.rows.find(row => row.id === id && !row.revoked)?.publicKey ?? null; }
   /** Current foreground interests are ephemeral Happy IDs, not original runtime state.
    * @param {number} [now] @returns {Set<string>} */
   viewedSessions(now = Date.now()) {

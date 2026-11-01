@@ -83,6 +83,48 @@ enum DashboardFormat {
 }
 // END CODELIGHT DASHBOARD VALUES
 
+// BEGIN CODELIGHT CONNECTION VALUES
+struct ConnectionConfiguration: Decodable, Equatable {
+    let enabledChannels: [String]
+    let relayConfigured: Bool
+    let serverUrl: String
+    let hasToken: Bool
+    static let unknown = ConnectionConfiguration(enabledChannels: [], relayConfigured: false, serverUrl: "", hasToken: false)
+    var availableKinds: [String] { ["local", "cloudflare"] + (relayConfigured ? ["relay"] : []) }
+    var enabledKinds: Set<String> { Set(enabledChannels).intersection(Set(availableKinds)) }
+}
+
+struct ConnectionChannel: Identifiable, Decodable, Equatable {
+    let id: String
+    let kind: String
+    let url: String
+    let label: String?
+    let state: String
+    var displayLabel: String { label ?? (kind == "local" ? "Local network" : kind == "cloudflare" ? "Cloudflare" : "Relay") }
+}
+
+enum ConnectionStatus {
+    static func label(kind: String, configuration: ConnectionConfiguration, channels: [ConnectionChannel]) -> String {
+        guard configuration.enabledKinds.contains(kind) else { return "Off" }
+        let states = channels.filter { $0.kind == kind }.map { $0.state }
+        if states.contains("ready") { return "Ready" }
+        if states.contains("starting") { return "Starting…" }
+        if states.contains("reconnecting") { return "Reconnecting…" }
+        if states.contains("unverified") { return "Not verified yet" }
+        return "Unavailable"
+    }
+}
+// END CODELIGHT CONNECTION VALUES
+
+// BEGIN CODELIGHT SERVICE VALUES
+enum ServicePhase: String { case starting, running, pausing, paused, failed
+    var canStart: Bool { self == .paused || self == .failed }
+    var canPause: Bool { self == .starting || self == .running }
+    var running: Bool { self == .starting || self == .running }
+    func terminated() -> ServicePhase { self == .pausing ? .paused : .failed }
+}
+// END CODELIGHT SERVICE VALUES
+
 @MainActor
 final class DashboardMetricsStore: ObservableObject {
     @Published private(set) var value: DashboardMetrics?
@@ -99,19 +141,24 @@ final class ServiceController: ObservableObject {
     @Published var status = "Starting CodeLight…"
     @Published var pairingURL = ""
     @Published var origin = ""
-    @Published var running = false
+    @Published private(set) var phase: ServicePhase = .paused
+    var running: Bool { phase.running }
     @Published var devices: [Device] = []
     @Published var notificationsAvailable = false
     @Published var copied = false
     @Published var operationError = ""
-    @Published var accessMode = "cloudflare"
+    @Published private(set) var connectionConfiguration = ConnectionConfiguration.unknown
+    @Published private(set) var connectionChannels: [ConnectionChannel] = []
+    @Published private(set) var connectionConfigurationKnown = false
+    @Published private(set) var channelsBusy = false
+    @Published private(set) var channelsError = ""
     @Published var relayServer = ""
     @Published var relayKey = ""
     @Published var accessBusy = false
-    @Published var accessHasSavedKey = false
+    var accessHasSavedKey: Bool { connectionConfiguration.hasToken }
     @Published var accessError = ""
-    @Published var accessState = ""
     private var accessRequestID = ""
+    private var channelsRequestID = ""
     @Published private(set) var selection = DashboardSelection()
     @Published private var cachedPairingImage: NSImage?
     let metrics = DashboardMetricsStore()
@@ -132,40 +179,63 @@ final class ServiceController: ObservableObject {
         task.currentDirectoryURL = runtime
         task.standardOutput = output; task.standardError = errors; task.standardInput = stdin
         task.environment = ProcessInfo.processInfo.environment.merging(["PATH": runtime.path + ":/usr/bin:/bin:/usr/sbin:/sbin"]) { _, new in new }
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        output.fileHandleForReading.readabilityHandler = { [weak self, weak task] handle in
             let bytes = handle.availableData
             guard !bytes.isEmpty else { return }
-            DispatchQueue.main.async { self?.receive(bytes) }
+            DispatchQueue.main.async {
+                // 旧服务的迟到 stdout 不得覆盖新 Process 的通道状态或二维码。
+                guard let self, let task, self.process === task else { return }
+                self.receive(bytes)
+            }
         }
         errors.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
-        task.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async { self?.process = nil; self?.running = false; self?.pairingURL = ""; self?.status = "Connection unavailable" }
+        task.terminationHandler = { [weak self] terminated in
+            DispatchQueue.main.async {
+                guard let self, self.process === terminated else { return }
+                self.phase = self.phase.terminated()
+                self.process = nil; self.input = nil; self.pairingURL = ""; self.origin = ""
+                self.status = self.phase == .paused ? "Paused" : "Connection unavailable"
+                self.metrics.reset()
+                self.resetConnectionObservation()
+            }
         }
-        process = task; input = stdin; status = "Starting CodeLight…"; metrics.reset()
-        do { try task.run(); running = true } catch { process = nil; status = "Connection unavailable" }
+        process = task; input = stdin; phase = .starting; buffer.removeAll(); status = "Starting CodeLight…"; metrics.reset(); resetConnectionObservation()
+        do { try task.run() } catch { process = nil; input = nil; phase = .failed; status = "Connection unavailable" }
     }
     private func receive(_ bytes: Data) {
+        // 暂停等待完整子进程清理期间，迟到消息不能把用户主动暂停重新显示为连接就绪。
+        guard phase != .pausing else { return }
         buffer.append(bytes)
         if buffer.count > 65536 { buffer.removeAll(); return }
         while let end = buffer.firstIndex(of: 10) {
             let line = buffer.prefix(upTo: end); buffer.removeSubrange(...end)
             guard let item = try? JSONSerialization.jsonObject(with: line) as? [String: Any], let type = item["type"] as? String else { continue }
             if type == "ready", let value = item["pairingUrl"] as? String {
+                phase = .running
                 pairingURL = value; origin = item["origin"] as? String ?? ""
                 status = devices.contains { !$0.revoked } ? "Connection ready" : "Ready to scan"
-            } else if type == "access-configuration", let configuration = item["configuration"] as? [String: Any] {
-                accessHasSavedKey = configuration["hasToken"] as? Bool ?? false
-                if !accessBusy {
-                    accessMode = configuration["mode"] as? String ?? "cloudflare"
-                    relayServer = configuration["serverUrl"] as? String ?? ""
+            } else if type == "access-configuration", let raw = item["configuration"],
+                      let bytes = try? JSONSerialization.data(withJSONObject: raw),
+                      let configuration = try? JSONDecoder().decode(ConnectionConfiguration.self, from: bytes) {
+                let previousServer = connectionConfiguration.serverUrl
+                connectionConfiguration = configuration; connectionConfigurationKnown = true
+                // 通道勾选回执不能覆盖用户正在编辑的另一个 Relay 地址草稿。
+                if !accessBusy, relayServer.isEmpty || relayServer == previousServer { relayServer = configuration.serverUrl }
+            } else if type == "access-channels", let raw = item["channels"],
+                      let bytes = try? JSONSerialization.data(withJSONObject: raw),
+                      let channels = try? JSONDecoder().decode([ConnectionChannel].self, from: bytes) {
+                let safeChannels = channels.filter { ["local", "cloudflare", "relay"].contains($0.kind) }
+                if connectionChannels != safeChannels { connectionChannels = safeChannels }
+                if item["overallState"] as? String == "unavailable", pairingURL.isEmpty { status = "Connection unavailable" }
+            } else if type == "access-result", let requestID = item["requestId"] as? String {
+                if requestID == channelsRequestID {
+                    channelsBusy = false
+                    channelsError = item["ok"] as? Bool == true ? "" : "Could not update connection channels. Try again."
+                } else if requestID == accessRequestID {
+                    accessBusy = false
+                    if item["ok"] as? Bool == true { relayKey = ""; accessError = ""; relayServer = connectionConfiguration.serverUrl }
+                    else { accessError = "Could not validate the Relay connection. Check address, access key and network." }
                 }
-            } else if type == "access-status" {
-                accessState = item["state"] as? String ?? ""
-                if accessState == "unavailable", pairingURL.isEmpty { status = "Connection unavailable" }
-            } else if type == "access-result", item["requestId"] as? String == accessRequestID {
-                accessBusy = false
-                if item["ok"] as? Bool == true { relayKey = ""; accessError = "" }
-                else { accessError = "Could not validate the public entry. Check address, access key and network." }
             } else if type == "metrics" {
                 // 每秒小样本只通知指标视图，不能使设备输入框和隐藏二维码重新计算。
                 if let raw = item["metrics"] { metrics.receive(raw) } else { metrics.reset() }
@@ -180,14 +250,25 @@ final class ServiceController: ObservableObject {
             } else if type == "notifications" {
                 notificationsAvailable = item["available"] as? Bool ?? false
             } else if type == "error" {
-                pairingURL = ""; status = "Connection unavailable"; metrics.reset()
+                pairingURL = ""; status = "Connection unavailable"; metrics.reset(); resetConnectionObservation()
             } else if type == "starting" { status = item["phase"] as? String == "public-connection" ? "Connecting from anywhere…" : "Starting CodeLight…" }
         }
     }
+    private func resetConnectionObservation() {
+        connectionChannels = []; connectionConfigurationKnown = false; channelsBusy = false; accessBusy = false
+        channelsRequestID = ""; accessRequestID = ""
+    }
     func selectPanel(_ panel: DashboardPanel) { selection.select(panel) }
     var publicStatus: String {
-        if accessState == "reconnecting" { return "Public entry is reconnecting…" }
-        if accessState == "unavailable" { return "Connection unavailable" }
+        if phase == .pausing { return "Pausing…" }
+        if phase == .paused { return "Paused" }
+        if phase == .failed { return "Connection unavailable" }
+        if connectionConfigurationKnown && connectionConfiguration.enabledKinds.isEmpty { return "All connections are off" }
+        if !connectionChannels.contains(where: { $0.state == "ready" }) {
+            if connectionChannels.contains(where: { $0.state == "reconnecting" }) { return "Reconnecting…" }
+            if connectionChannels.contains(where: { $0.state == "unverified" }) { return "Waiting for connection verification…" }
+            if !connectionChannels.isEmpty && connectionChannels.allSatisfy({ $0.state == "unavailable" }) { return "Connection unavailable" }
+        }
         return status
     }
     func refresh() { try? input?.fileHandleForWriting.write(contentsOf: Data("{\"type\":\"refresh-invite\"}\n".utf8)) }
@@ -196,16 +277,31 @@ final class ServiceController: ObservableObject {
         guard var bytes = try? JSONSerialization.data(withJSONObject: value) else { return }; bytes.append(10)
         try? input?.fileHandleForWriting.write(contentsOf: bytes)
     }
-    func stop() { process?.terminate() }
-    func configureAccess() {
+    func stop() {
+        guard phase.canPause, let process else { return }
+        // 复用服务的 graceful shutdown；Start 只有在 terminationHandler 确认所有 owned writer 退出后才开放。
+        phase = .pausing; pairingURL = ""; status = "Pausing…"; process.terminate()
+    }
+    func setChannel(_ kind: String, enabled: Bool) {
+        guard !channelsBusy, connectionConfigurationKnown, connectionConfiguration.availableKinds.contains(kind), let input else { return }
+        var selected = connectionConfiguration.enabledKinds
+        if enabled { selected.insert(kind) } else { selected.remove(kind) }
+        channelsRequestID = UUID().uuidString
+        let value: [String: Any] = ["type": "set-enabled-channels", "requestId": channelsRequestID, "channels": ["local", "cloudflare", "relay"].filter { selected.contains($0) }]
+        guard var bytes = try? JSONSerialization.data(withJSONObject: value) else { return }; bytes.append(10)
+        channelsBusy = true; channelsError = ""
+        do { try input.fileHandleForWriting.write(contentsOf: bytes) }
+        catch { channelsBusy = false; channelsError = "Could not update connection channels. Try again." }
+    }
+    func configureRelay() {
         guard !accessBusy, let input else { return }
         accessRequestID = UUID().uuidString
-        var value = ["type": "configure-access", "requestId": accessRequestID, "mode": accessMode]
-        if accessMode == "relay" { value["serverUrl"] = relayServer; if !relayKey.isEmpty { value["token"] = relayKey } }
+        var value = ["type": "configure-relay", "requestId": accessRequestID, "serverUrl": relayServer]
+        if !relayKey.isEmpty { value["token"] = relayKey }
         guard var bytes = try? JSONSerialization.data(withJSONObject: value) else { return }; bytes.append(10)
         accessBusy = true; accessError = ""
         do { try input.fileHandleForWriting.write(contentsOf: bytes) }
-        catch { accessBusy = false; accessError = "Could not validate the public entry. Check address, access key and network." }
+        catch { accessBusy = false; accessError = "Could not validate the Relay connection. Check address, access key and network." }
     }
     func copyLink() {
         NSPasteboard.general.clearContents(); copied = NSPasteboard.general.setString(pairingURL, forType: .string)
@@ -225,7 +321,7 @@ final class ServiceController: ObservableObject {
     #if DEBUG
     static func preview(paired: Bool) -> ServiceController {
         let service = ServiceController()
-        service.running = true; service.status = paired ? "Connection ready" : "Ready to scan"
+        service.phase = .running; service.status = paired ? "Connection ready" : "Ready to scan"
         service.pairingURL = "codelight://preview/not-a-pairing-invitation"
         if paired {
             let now = Date().timeIntervalSince1970 * 1000
@@ -261,7 +357,13 @@ struct ContentView: View {
                 }
                 Spacer()
                 Text(LocalizedStringKey(service.publicStatus)).font(.caption).foregroundStyle(.secondary)
-                if !service.running { Button("Retry") { service.start() } }
+            }
+            HStack(spacing: 12) {
+                Button("Start", systemImage: "play.fill") { service.start() }
+                    .disabled(!service.phase.canStart).accessibilityIdentifier("codelight-service-start")
+                Button("Pause", systemImage: "pause.fill") { service.stop() }
+                    .disabled(!service.phase.canPause).accessibilityIdentifier("codelight-service-pause")
+                if service.phase == .pausing { ProgressView().controlSize(.small) }
             }
             Label("Only desktop Codex connected through gateway mode is supported.", systemImage: "info.circle")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -284,27 +386,42 @@ struct ContentView: View {
 
 struct PublicAccessView: View {
     @ObservedObject var service: ServiceController
-    @State private var expanded = false
+    @State private var relayExpanded = false
     var body: some View {
-        DisclosureGroup("Public access", isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                Picker("Public access", selection: $service.accessMode) {
-                    Text("Cloudflare").tag("cloudflare")
-                    Text("Relay").tag("relay")
-                }.pickerStyle(.segmented).disabled(service.accessBusy)
-                if service.accessMode == "relay" {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Connections").font(.headline)
+            ForEach(service.connectionConfiguration.availableKinds, id: \.self) { kind in
+                HStack(alignment: .top, spacing: 14) {
+                    Toggle(isOn: Binding(get: { service.connectionConfiguration.enabledKinds.contains(kind) }, set: { service.setChannel(kind, enabled: $0) })) {
+                        Text(LocalizedStringKey(kind == "local" ? "Local network" : kind == "cloudflare" ? "Cloudflare" : "Relay"))
+                    }.toggleStyle(.checkbox).accessibilityIdentifier("codelight-channel-\(kind)")
+                        .disabled(service.channelsBusy || !service.running || !service.connectionConfigurationKnown)
+                    Spacer()
+                    Text(LocalizedStringKey(service.phase == .paused || service.phase == .pausing ? service.publicStatus : service.connectionConfigurationKnown ? ConnectionStatus.label(kind: kind, configuration: service.connectionConfiguration, channels: service.connectionChannels) : "Starting…"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text("The phone chooses an available connection. You can switch connections there anytime.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if service.connectionChannels.contains(where: { $0.state == "unverified" }) {
+                Text("An address is waiting for verification. The phone can check it when connecting.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if !service.channelsError.isEmpty { Text(LocalizedStringKey(service.channelsError)).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            DisclosureGroup("Configure Relay", isExpanded: $relayExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
                     TextField("Relay server address", text: $service.relayServer, prompt: Text("https://relay.example.com"))
                         .textFieldStyle(.roundedBorder).disabled(service.accessBusy)
                     SecureField("Access key", text: $service.relayKey).textFieldStyle(.roundedBorder).disabled(service.accessBusy)
-                    if service.accessHasSavedKey { Text("Saved key will be reused for this server.").font(.caption).foregroundStyle(.secondary) }
-                }
-                HStack {
-                    Button("Validate & connect") { service.configureAccess() }.disabled(service.accessBusy || !service.running)
-                    if service.accessBusy { ProgressView().controlSize(.small); Text("Validating public entry…").font(.caption) }
-                }
-                if service.accessState == "reconnecting" { Text("Public entry is reconnecting…").font(.caption).foregroundStyle(.secondary) }
-                if !service.accessError.isEmpty { Text(LocalizedStringKey(service.accessError)).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-            }.padding(.top, 12)
+                    if service.accessHasSavedKey, service.relayServer == service.connectionConfiguration.serverUrl { Text("Saved key will be reused for this server.").font(.caption).foregroundStyle(.secondary) }
+                    HStack {
+                        Button("Validate & save Relay") { service.configureRelay() }.disabled(service.accessBusy || !service.running || service.relayServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("codelight-configure-relay")
+                        if service.accessBusy { ProgressView().controlSize(.small); Text("Validating Relay…").font(.caption) }
+                    }
+                    if !service.accessError.isEmpty { Text(LocalizedStringKey(service.accessError)).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+                }.padding(.top, 12)
+            }
         }
     }
 }
@@ -393,7 +510,7 @@ struct PairingView: View {
                 Button(LocalizedStringKey(service.copied ? "Copied" : "Copy pairing link")) { service.copyLink() }.disabled(service.pairingURL.isEmpty)
                 Button("Refresh QR") { service.refresh() }.disabled(service.pairingURL.isEmpty)
             }
-            Text("This connection is temporary. Scan again after reopening the Mac app.")
+            Text("The phone keeps all enabled addresses. If addresses change and reconnection fails, scan the current QR code.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 430)
         }.frame(maxWidth: .infinity)
             .onAppear { service.preparePairingImage() }

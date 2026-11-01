@@ -36,6 +36,7 @@ export default function Home() {
 }
 
 function Authenticated() {
+    const auth = useAuth();
     const isDataReady = useIsDataReady();
     const machines = useAllMachines({ includeOffline: true });
     // Until a computer is linked there is nothing for the home chrome to do:
@@ -49,7 +50,7 @@ function Authenticated() {
         isWeb: Platform.OS === 'web',
         isRunningOnMac: isRunningOnMac(),
     });
-    if (showInstallStep) {
+    if (showInstallStep && !(config.noninvasiveLocal && auth.credentials?.peer)) {
         return config.noninvasiveLocal ? <CodeLightScanScreen /> : <OnboardingLinkComputer />;
     }
     return config.noninvasiveLocal ? <CodeLightSessions /> : <MainView variant="phone" />;

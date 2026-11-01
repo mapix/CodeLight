@@ -1,6 +1,7 @@
 import "reflect-metadata";
 
-import { db } from "./storage/db";
+import { db, getPGlite } from "./storage/db";
+import { closeDatabase } from "./storage/closeDatabase";
 import { initEncrypt } from "./modules/encrypt";
 import { initGithub } from "./modules/github";
 import { loadFiles } from "./storage/files";
@@ -26,7 +27,7 @@ export async function startServer(opts: StartServerOptions): Promise<{ port: num
 
     await db.$connect();
     onShutdown("db", async () => {
-        await db.$disconnect();
+        await closeDatabase(db, getPGlite());
     });
     onShutdown("activity-cache", async () => {
         activityCache.shutdown();

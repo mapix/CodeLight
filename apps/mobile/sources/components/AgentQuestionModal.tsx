@@ -23,6 +23,7 @@ import {
     type PendingAgentForm,
 } from '@/sync/agentCommunications';
 import { sessionAnswerQuestion, sessionCancelCommunication } from '@/sync/ops';
+import { BridgeRpcUnconfirmedError } from '@/sync/noninvasiveRpcJournal';
 
 interface AgentQuestionModalProps {
     pending: PendingAgentForm;
@@ -43,15 +44,21 @@ export function AgentQuestionModal({ pending, sessionId, visible, onClose }: Age
     const [drafts, setDrafts] = React.useState<Record<string, AgentQuestionDraft>>({});
     const [submitting, setSubmitting] = React.useState(false);
     const submittingRef = React.useRef(false);
+    const generation = React.useRef(0);
     const [error, setError] = React.useState<string | null>(null);
+    const [unconfirmed, setUnconfirmed] = React.useState(false);
 
     // Start from a clean form every time the modal opens for a new request.
     React.useEffect(() => {
+        generation.current++;
+        submittingRef.current = false; setSubmitting(false);
         if (visible) {
             setDrafts({});
             setError(null);
+            setUnconfirmed(false);
         }
-    }, [pending.id, visible]);
+        return () => { generation.current++; };
+    }, [sessionId, pending.id, visible]);
 
     const draftFor = React.useCallback(
         (questionId: string) => drafts[questionId] ?? { options: [], custom: '' },
@@ -77,6 +84,7 @@ export function AgentQuestionModal({ pending, sessionId, visible, onClose }: Age
     const handleSubmit = React.useCallback(async () => {
         if (!ready || submittingRef.current) return;
         submittingRef.current = true;
+        const owner = generation.current;
         setSubmitting(true);
         setError(null);
         try {
@@ -86,25 +94,28 @@ export function AgentQuestionModal({ pending, sessionId, visible, onClose }: Age
                 buildAnswers(pending.questions, drafts),
                 pending.kind,
             );
-            onClose();
+            if (owner === generation.current) onClose();
         } catch (submitError) {
-            // Keep the form open with the answers intact so the user can retry.
-            setError(submitError instanceof Error ? submitError.message : t('agentQuestion.submitFailed'));
+            if (owner !== generation.current) return;
+            // 未确认只允许查询原回执；保留原答案，不能让改选或关闭触发另一条原生操作。
+            setUnconfirmed(submitError instanceof BridgeRpcUnconfirmedError);
+            setError(submitError instanceof BridgeRpcUnconfirmedError ? t('agentQuestion.replyUnconfirmed')
+                : submitError instanceof Error ? submitError.message : t('agentQuestion.submitFailed'));
         } finally {
-            submittingRef.current = false;
-            setSubmitting(false);
+            if (owner === generation.current) { submittingRef.current = false; setSubmitting(false); }
         }
     }, [drafts, onClose, pending, ready, sessionId, submitting]);
 
     const handleDismiss = React.useCallback(async () => {
         if (submitting) return;
         onClose();
+        if (unconfirmed) return;
         try {
             await sessionCancelCommunication(sessionId, pending.id, pending.kind);
         } catch {
             // The agent re-asks if the dismissal never lands; nothing to show here.
         }
-    }, [onClose, pending.id, pending.kind, sessionId, submitting]);
+    }, [onClose, pending.id, pending.kind, sessionId, submitting, unconfirmed]);
 
     return (
         <Modal
@@ -155,7 +166,7 @@ export function AgentQuestionModal({ pending, sessionId, visible, onClose }: Age
                                             accessibilityState={{ selected }}
                                             style={[styles.option, selected && styles.optionSelected]}
                                             onPress={() => handleToggle(question.id, option.label, multiSelect)}
-                                            disabled={submitting}
+                                            disabled={submitting || unconfirmed}
                                         >
                                             <View style={[styles.checkbox, selected && styles.checkboxSelected]}>
                                                 {selected && (
@@ -185,7 +196,7 @@ export function AgentQuestionModal({ pending, sessionId, visible, onClose }: Age
                                             placeholder={t('agentQuestion.ownAnswerPlaceholder')}
                                             placeholderTextColor={theme.colors.textSecondary}
                                             multiline
-                                            editable={!submitting}
+                                            editable={!submitting && !unconfirmed}
                                             // Focus the first question's field so the keyboard is
                                             // ready for a written answer without another tap.
                                             autoFocus={index === 0 && question.options.length === 0}
@@ -210,7 +221,7 @@ export function AgentQuestionModal({ pending, sessionId, visible, onClose }: Age
                         {submitting ? (
                             <ActivityIndicator color="#fff" />
                         ) : (
-                            <Text style={styles.submitText}>{t('agentQuestion.submit')}</Text>
+                            <Text style={styles.submitText}>{t(unconfirmed ? 'agentQuestion.checkResult' : 'agentQuestion.submit')}</Text>
                         )}
                     </Pressable>
                 </View>

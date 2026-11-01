@@ -9,6 +9,41 @@ function setup() {
     return { store, rpc, id, saved: () => saved, journal: new NoninvasiveRpcJournal(store, rpc, id, async value => `digest:${value.length}`) };
 }
 describe('non-invasive RPC persistent identities', () => {
+    it('a proven pre-dispatch rejection clears only the new journal record and allows an explicit retry', async () => {
+        const f = setup(); f.rpc.mockRejectedValueOnce(Object.assign(Error('connection changed before emit'), { effectMayHaveOccurred: false }));
+        await expect(f.journal.execute(context, { turnId: 'native-turn' })).rejects.toThrow('connection changed before emit');
+        expect(f.saved()).toBeNull(); expect(f.rpc).toHaveBeenCalledTimes(1);
+    });
+    it('confirms a lost transport acknowledgment through the original receipt without resending', async () => {
+        const f = setup(); f.rpc.mockRejectedValueOnce(Error('lost ACK'));
+        f.rpc.mockResolvedValueOnce({ receipt: { id: 'original-command-id', status: 'complete', result: { accepted: true } } });
+        await expect(f.journal.execute(context, { turnId: 'native-turn' })).resolves.toEqual({ accepted: true });
+        expect(f.rpc.mock.calls.map(call => call[1])).toEqual(['abort', 'bridge-receipt']);
+        expect(f.id).toHaveBeenCalledTimes(1); expect(f.saved()).toBeNull();
+    });
+    it('a still-running receipt is unconfirmed and keeps the original command', async () => {
+        const f = setup(); f.rpc.mockResolvedValue({ receipt: { id: 'original-command-id', status: 'running' } });
+        await expect(f.journal.execute(context, { turnId: 'native-turn' })).rejects.toMatchObject({ name: 'BridgeRpcUnconfirmedError', commandId: 'original-command-id' });
+        expect(f.saved()).not.toBeNull(); expect(f.id).toHaveBeenCalledTimes(1);
+    });
+    it('a handler response missing its receipt is recovered before reporting an unknown outcome', async () => {
+        const f = setup(); f.rpc.mockResolvedValueOnce({ receipt: null });
+        f.rpc.mockResolvedValueOnce({ receipt: { id: 'original-command-id', status: 'complete' } });
+        await f.journal.execute(context, { turnId: 'native-turn' });
+        expect(f.rpc.mock.calls.map(call => call[1])).toEqual(['abort', 'bridge-receipt']);
+        expect(f.id).toHaveBeenCalledTimes(1); expect(f.saved()).toBeNull();
+    });
+    it('an explicit check during reconnect recovery shares the original result and never resubmits', async () => {
+        const f = setup(); f.rpc.mockResolvedValue({ receipt: null });
+        await expect(f.journal.execute(context, { turnId: 'native-turn' })).rejects.toThrow();
+        let finish!: (value: BridgeRpcReply) => void;
+        f.rpc.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+        const recovery = f.journal.recover(context), check = f.journal.execute(context, { turnId: 'native-turn' });
+        await vi.waitFor(() => expect(finish).toBeDefined());
+        finish({ receipt: { id: 'original-command-id', status: 'complete', result: { accepted: true } } });
+        expect(await recovery).toBe(true); expect(await check).toEqual({ accepted: true });
+        expect(f.id).toHaveBeenCalledTimes(1); expect(f.saved()).toBeNull();
+    });
     it('can recover a model receipt read-only without creating or dispatching another mutation', async () => {
         const f = setup(); const modelContext = { ...context, method: 'codex-controls-update' };
         f.rpc.mockRejectedValueOnce(Error('lost ACK')); await expect(f.journal.execute(modelContext, { model: 'fixture' })).rejects.toThrow();

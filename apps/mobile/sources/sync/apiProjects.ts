@@ -8,12 +8,13 @@ import type { AuthCredentials } from '@/auth/tokenStorage';
 import { getHappyClientId } from './apiSocket';
 import { getServerUrl, rewriteLoopbackHost } from './serverConfig';
 import type { ApiProjectAvatar, ApiProjectRecord } from './projectTypes';
+import { credentialHeaders } from './peerNetwork';
 
 const PROJECT_BATCH_SIZE = 100;
 
-function authHeaders(credentials: AuthCredentials, contentType = true): Record<string, string> {
+function authHeaders(credentials: AuthCredentials, contentType = true, url = getServerUrl()+'/', method = 'GET'): Record<string, string> {
     return {
-        Authorization: `Bearer ${credentials.token}`,
+        ...credentialHeaders(credentials,url,method,getServerUrl()),
         ...(contentType ? { 'Content-Type': 'application/json' } : {}),
         'X-Happy-Client': getHappyClientId(),
     };
@@ -89,7 +90,7 @@ export async function fetchProjects(
         const batch = ids.slice(index, index + PROJECT_BATCH_SIZE);
         const query = encodeURIComponent(batch.join(','));
         const response = await fetch(`${getServerUrl()}/v1/projects?ids=${query}`, {
-            headers: authHeaders(credentials),
+            headers: authHeaders(credentials,true,`${getServerUrl()}/v1/projects?ids=${query}`),
         });
         if (response.status === 404) continue;
         if (!response.ok) {
@@ -114,7 +115,7 @@ export async function requestProjectAvatarDownload(
     const endpoint = `${getServerUrl()}/v1/projects/${encodeURIComponent(projectId)}/avatar/request-download`;
     const response = await fetch(endpoint, {
         method: 'POST',
-        headers: authHeaders(credentials, false),
+        headers: authHeaders(credentials, false, endpoint, 'POST'),
     });
     if (!response.ok) {
         throw new Error(`Failed to request project avatar download: ${response.status}`);
@@ -137,8 +138,8 @@ export async function downloadProjectAvatar(
 ): Promise<Uint8Array> {
     const serverUrl = getServerUrl();
     const downloadUrl = await requestProjectAvatarDownload(credentials, projectId);
-    const headers = isServerHostedUrl(downloadUrl, serverUrl)
-        ? { Authorization: `Bearer ${credentials.token}`, 'X-Happy-Client': getHappyClientId() }
+    const headers = isServerHostedUrl(downloadUrl, serverUrl) || credentials.peer
+        ? { ...credentialHeaders(credentials,downloadUrl,'GET',serverUrl), 'X-Happy-Client': getHappyClientId() }
         : undefined;
     const response = await fetch(downloadUrl, headers ? { headers } : undefined);
     if (!response.ok) {

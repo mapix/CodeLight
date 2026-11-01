@@ -39,11 +39,12 @@ const fixtureCode = ts.transpileModule(`function SessionInputFixture({sessionId,
     const composer = React.createElement('Composer', { testID: 'unchanged-composer' });
     return ${inputExpression.getText(source)};
 }`, { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }).outputText;
-const SessionInputFixture = new Function('React', 'AnimatedFade', 'CenteredInputWidth', 'AgentQuestionBanner', 'RigActivityBar', `${fixtureCode}; return SessionInputFixture;`)(
+const SessionInputFixture = new Function('React', 'AnimatedFade', 'CenteredInputWidth', 'AgentQuestionBanner', 'PeerChannelControl', 'RigActivityBar', `${fixtureCode}; return SessionInputFixture;`)(
     React,
     ({ visible, children }: any) => React.createElement('Fade', { pointerEvents: visible ? 'auto' : 'none', style: { opacity: visible ? 1 : 0 } }, children),
     ({ children }: any) => React.createElement('CenteredInputWidth', {}, children),
     AgentQuestionBanner,
+    () => React.createElement('ChannelControl'),
     () => React.createElement('StatusDetails'),
 );
 
@@ -55,6 +56,7 @@ it('a late native question stays visible and answerable while the phone reads ea
     act(() => { renderer = create(React.createElement(SessionInputFixture, props)); });
     const byId = (id: string) => renderer.root.findAll((node: any) => node.props.testID === id)[0];
     expect(byId('codelight-question-open')).toBeUndefined();
+    expect(renderer.root.findAllByType('ChannelControl')).toHaveLength(0);
     const composer = byId('unchanged-composer');
     state.pending = [{ id: 'latest-native-question', createdAt: 5, kind: 'form', questions: [{ id: 'answer', header: 'Latest question', question: 'Choose the original answer', options: [{ label: 'Alpha' }, { label: 'Beta' }] }] }];
     act(() => renderer.update(React.createElement(SessionInputFixture, props)));

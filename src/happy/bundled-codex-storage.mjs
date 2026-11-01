@@ -51,7 +51,7 @@ export class BundledCodexStorage extends SessionStorage {
   /** @param {number} offset @returns {Promise<Record<string,any>[]>} */
   async readIndex(offset) {
     const rows = await new Promise((resolve, reject) => {
-      const worker = new Worker(new URL('./codex-index-worker.mjs', import.meta.url), { execArgv: [], workerData: { root: this.roots.codex, offset } });
+      const worker = new Worker(new URL('./codex-index-worker.mjs', import.meta.url), { execArgv: [], workerData: { root: this.roots.codex, offset, now: this.now() } });
       worker.once('message', value => value.ok ? resolve(value.rows) : reject(new BridgeError('session-store-unavailable', 'The Codex index could not be read.')));
       worker.once('error', () => reject(new BridgeError('session-store-unavailable', 'The Codex index worker failed.')));
     });

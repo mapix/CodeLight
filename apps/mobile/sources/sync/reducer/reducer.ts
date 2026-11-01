@@ -157,6 +157,10 @@ type StoredPermission = {
 
 export type ReducerState = {
     nativeRevisions: Map<string, number>;
+    nativeSnapshotOwners: Map<string, string>;
+    nativeRowIds: Map<string, string>;
+    nativeRetiredRowIds: Set<string>;
+    nativeTextFragments: Map<string, Map<string, NormalizedMessage>>;
     nativeToolUpdates: Map<string, string>;
     toolIdToMessageId: Map<string, string>; // toolId/permissionId -> messageId (since they're the same now)
     sidechainToolIdToMessageId: Map<string, string>; // toolId -> sidechain messageId (for dual tracking)
@@ -199,6 +203,10 @@ export type ReducerState = {
 export function createReducer(): ReducerState {
     return {
         nativeRevisions: new Map(),
+        nativeSnapshotOwners: new Map(),
+        nativeRowIds: new Map(),
+        nativeRetiredRowIds: new Set(),
+        nativeTextFragments: new Map(),
         nativeToolUpdates: new Map(),
         toolIdToMessageId: new Map(),
         sidechainToolIdToMessageId: new Map(),

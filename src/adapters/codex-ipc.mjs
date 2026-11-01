@@ -19,6 +19,7 @@ const VERSIONS = Object.freeze({
   'thread-follower-start-turn': 2,
   'thread-follower-steer-turn': 1,
   'thread-follower-read-model-settings': 1,
+  'thread-follower-load-complete-history': 1,
   'thread-follower-update-thread-settings': 2,
   'thread-follower-interrupt-turn': 4,
   'thread-follower-command-approval-decision': 1,
@@ -73,7 +74,8 @@ export class CodexIpcAdapter {
     /** @type {net.Socket|null} */ this.socket = null;
     /** @type {Promise<void>|null} */ this.connecting = null;
     this.clientId = 'initializing-client';
-    this.buffer = Buffer.alloc(0);
+    this.frameHeader = Buffer.alloc(4); this.headerOffset = 0;
+    /** @type {Buffer|null} */ this.frameBody = null; this.bodyOffset = 0;
     /** @type {Map<string,Pending>} */ this.pending = new Map();
     /** @type {Map<string,Owner>} */ this.owners = new Map();
     /** @type {Map<string,Subscription>} */ this.subscriptions = new Map();
@@ -93,7 +95,7 @@ export class CodexIpcAdapter {
   async open() {
     const socket = net.createConnection(this.socketPath);
     this.socket = socket;
-    this.buffer = Buffer.alloc(0);
+    this.headerOffset = 0; this.frameBody = null; this.bodyOffset = 0;
     this.clientId = 'initializing-client';
     socket.on('data', (chunk) => {
       if (this.socket !== socket) return;
@@ -125,7 +127,7 @@ export class CodexIpcAdapter {
     if (this.socket !== socket) return;
     this.socket = null;
     this.clientId = 'initializing-client';
-    this.buffer = Buffer.alloc(0);
+    this.headerOffset = 0; this.frameBody = null; this.bodyOffset = 0;
     this.owners.clear();
     for (const subscription of this.subscriptions.values()) subscription.owner = null;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
@@ -144,13 +146,21 @@ export class CodexIpcAdapter {
 
   /** @param {Buffer} chunk */
   consume(chunk) {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    while (this.buffer.length >= 4) {
-      const length = this.buffer.readUInt32LE(0);
-      if (length === 0 || length > this.maxFrameBytes) throw new BridgeError('codex-frame-too-large', 'Codex IPC frame exceeded the allowed size.', 502);
-      if (this.buffer.length < length + 4) return;
-      const json = this.buffer.subarray(4, length + 4).toString('utf8');
-      this.buffer = this.buffer.subarray(length + 4);
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (!this.frameBody) {
+        const count = Math.min(4 - this.headerOffset, chunk.length - offset);
+        chunk.copy(this.frameHeader, this.headerOffset, offset, offset + count); this.headerOffset += count; offset += count;
+        if (this.headerOffset < 4) return;
+        const length = this.frameHeader.readUInt32LE(0); this.headerOffset = 0;
+        if (length === 0 || length > this.maxFrameBytes) throw new BridgeError('codex-frame-too-large', 'Codex IPC frame exceeded the allowed size.', 502);
+        // 大帧正文只分配一次；不能每个 chunk 都复制已累积的整个 snapshot。
+        this.frameBody = Buffer.allocUnsafe(length); this.bodyOffset = 0;
+      }
+      const count = Math.min(this.frameBody.length - this.bodyOffset, chunk.length - offset);
+      chunk.copy(this.frameBody, this.bodyOffset, offset, offset + count); this.bodyOffset += count; offset += count;
+      if (this.bodyOffset < this.frameBody.length) return;
+      const json = this.frameBody.toString('utf8'); this.frameBody = null; this.bodyOffset = 0;
       const frame = JSON.parse(json);
       if (!frame || typeof frame !== 'object' || Array.isArray(frame)) throw new BridgeError('codex-protocol-error', 'Invalid Codex IPC frame.', 502);
       this.handle(frame);
@@ -302,12 +312,21 @@ export class CodexIpcAdapter {
   }
 
   /** Request a current read snapshot from the already attached owner. No owner discovery or runtime admission.
-   * @param {string} sessionId */
-  async refreshSnapshot(sessionId) {
+   * @param {string} sessionId @param {()=>void} [onRequested] */
+  async refreshSnapshot(sessionId, onRequested) {
     requireId(sessionId, 'sessionId');
     const subscription = this.subscriptions.get(sessionId);
     if (!subscription?.owner || !this.socket || this.socket.destroyed) throw new BridgeError('codex-owner-unavailable', 'There is no existing subscribed owner to refresh.', 409);
     this.follow(subscription.owner, true);
+    onRequested?.();
+  }
+  /** Explicit history scroll may load original saved turns, never a new runtime.
+   * @param {string} sessionId @param {string|null} [expectedGeneration] */
+  async loadCompleteHistory(sessionId, expectedGeneration) {
+    const owner = await this.discover(sessionId);
+    if (!owner) throw new BridgeError('codex-owner-unavailable', 'The original history owner is unavailable.', 409);
+    if (expectedGeneration != null && this.generation(sessionId) !== expectedGeneration) throw new BridgeError('source-epoch-changed', 'The original history owner changed.', 409);
+    return this.request('thread-follower-load-complete-history', { conversationId: sessionId }, owner.ownerClientId);
   }
 
   /** @param {Owner} owner @param {boolean} following */
@@ -322,6 +341,16 @@ export class CodexIpcAdapter {
     return owner ? `${owner.hostId}:${owner.ownerClientId}` : null;
   }
 
+  /** Use the native follower's current target only while its subscription and discovered epoch agree.
+   * @param {string} sessionId @returns {Promise<Owner|null>} */
+  async routingOwner(sessionId) {
+    await this.connect();
+    const subscription = this.subscriptions.get(sessionId), known = this.owners.get(sessionId);
+    if (this.socket && !this.socket.destroyed && subscription?.owner && known
+      && subscription.owner.ownerClientId === known.ownerClientId && known.hostId === this.hostId) return known;
+    return this.discover(sessionId);
+  }
+
   /** @param {string} sessionId @param {keyof typeof VERSIONS} method @param {Frame} params @param {string} commandId @param {string|null} [expectedGeneration] @returns {Promise<Frame>} */
   command(sessionId, method, params, commandId, expectedGeneration) {
     requireId(sessionId, 'sessionId'); requireId(commandId, 'commandId');
@@ -333,7 +362,9 @@ export class CodexIpcAdapter {
       return prior.promise;
     }
     const promise = (async () => {
-      const owner = await this.discover(sessionId);
+      let owner;
+      try { owner = await this.routingOwner(sessionId); }
+      catch (error) { Object.assign(/** @type {object} */ (error), { effectMayHaveOccurred: false }); throw error; }
       if (!owner) throw new BridgeError('codex-owner-unavailable', 'An existing desktop owner could not be confirmed for this session.', 409);
       // 上层 guard 之后 discovery 仍可能发现另一个 owner；旧动作必须固定原 epoch，不能随发现结果换目标。
       if (expectedGeneration != null && `${owner.hostId}:${owner.ownerClientId}` !== expectedGeneration) throw new BridgeError('source-epoch-changed', 'The original owner changed before native dispatch.', 409);
@@ -355,7 +386,7 @@ export class CodexIpcAdapter {
   /** Read the original owner's settings, after its pending settings writes have completed.
    * @param {string} sessionId @param {string|null} [expectedGeneration] */
   async readModelSettings(sessionId, expectedGeneration) {
-    const owner = await this.discover(sessionId);
+    const owner = await this.routingOwner(sessionId);
     if (!owner) throw new BridgeError('codex-owner-unavailable', 'An existing desktop owner could not be confirmed for this session.', 409);
     if (expectedGeneration != null && this.generation(sessionId) !== expectedGeneration) throw new BridgeError('source-epoch-changed', 'The original owner changed before settings were read.', 409);
     const response = await this.request('thread-follower-read-model-settings', { conversationId: sessionId }, owner.ownerClientId);

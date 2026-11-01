@@ -41,6 +41,25 @@ export const ca: TranslationStructure = {
         unconfirmed: "Actualització no confirmada. S’està comprovant la configuració original; no repeteixis el canvi.",
     },
 
+    codeLightChannels: {
+        title: "Connexió",
+        automatic: "Automàtica",
+        automaticDetail: "Utilitza una connexió disponible i verificada.",
+        local: "Xarxa local",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "Connectat",
+        available: "Disponible",
+        probing: "Comprovant",
+        failed: "No disponible",
+        switching: "Connectant…",
+        notConnected: "Sense connexió",
+        current: "Ruta actual",
+        latency: ({ ms }: { ms: number }) => "{ms} ms".replace("{ms}", String(ms)),
+        latencyUnknown: "Latència desconeguda",
+        switchFailed: "No s’ha pogut canviar la connexió. Es manté la ruta actual.",
+    },
+
     codeLightLoading: {
         titles: "S’estan carregant els títols de les sessions de Codex…",
         discovered: ({ count }: { count: number }) => "Sessions de Codex trobades: {count} · es continua carregant…".replace("{count}", String(count)),
@@ -604,6 +623,8 @@ export const ca: TranslationStructure = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "El resultat no està confirmat. Comprova l’operació original; no es tornarà a enviar.",
+        checkResult: "Comprova el resultat",
         title: "Pregunta",
         submit: "Envia la resposta",
         chooseMultiple: "Tria totes les que apliquin",

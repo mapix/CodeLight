@@ -56,10 +56,24 @@ probes are required before switching a working entry. A saved access key is not
 reused for another server. Prefix-aware phone transports keep other Macs on the
 same hostname outside the credential boundary. See `spec/codelight-network-relay.md`.
 
+Local LAN, Cloudflare and configured Relay can run concurrently around the same
+Mac/account identity. A v2 QR contains the pinned Mac key and enabled candidates;
+the phone accepts endpoint updates only inside that Mac's sealed peer response.
+Changing a verified route retains its cache and operation identity. The phone's
+automatic choice does not continuously poll every channel or replay mutations.
+
+Private-LAN requests do not transmit a reusable bearer token in cleartext.
+The device uses its retained box key to seal time/nonce/request-scoped proof to
+the Mac. All owned gateways share one approved-device registry and nonce verifier;
+the backend token is unwrapped only on the owned loopback link. Revocation applies
+across entries. Public TLS validation remains enabled.
+
 ## Gateway and native protocol
 
-The Mac gateway binds to loopback and is exposed through its owned outbound
-tunnel. Public requests need an approved device token except the small health
+The public gateways bind to distinct loopback ports and are exposed through
+their owned outbound tunnels. Enabled LAN gateways bind only actual private
+IPv4 interface addresses, with at most three listeners. Public requests need
+an approved device token except the small health
 endpoint and encrypted pairing exchange. Public auth-registration routes are
 blocked. Expensive unauthenticated pairing admission has a bounded burst/refill
 budget; connection count, body size, header time and request time are bounded.

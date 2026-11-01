@@ -43,6 +43,25 @@ export const zhHans: TranslationStructure = {
         unconfirmed: "更新结果尚未确认，正在核对原设置，请勿重复修改。",
     },
 
+    codeLightChannels: {
+        title: "连接通道",
+        automatic: "自动选择",
+        automaticDetail: "使用已验证的可用连接。",
+        local: "局域网",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "已连接",
+        available: "可用",
+        probing: "正在检查",
+        failed: "暂不可用",
+        switching: "正在连接…",
+        notConnected: "未连接",
+        current: "当前通道",
+        latency: ({ ms }: { ms: number }) => "{ms} 毫秒".replace("{ms}", String(ms)),
+        latencyUnknown: "延迟未确认",
+        switchFailed: "通道切换未完成，当前连接保持不变。",
+    },
+
     codeLightLoading: {
         titles: "正在读取 Codex 会话标题…",
         discovered: ({ count }: { count: number }) => "已发现 {count} 个 Codex 会话，继续加载中…".replace("{count}", String(count)),
@@ -605,6 +624,8 @@ export const zhHans: TranslationStructure = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "回答结果尚未确认。请检查原操作结果；不会重复发送。",
+        checkResult: "检查结果",
         title: "问题",
         submit: "发送回答",
         chooseMultiple: "选择所有适用项",

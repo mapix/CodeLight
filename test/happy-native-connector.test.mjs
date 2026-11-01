@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createHash, createHmac } from 'node:crypto';
+import { createCipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import { NativeHappyConnector } from '../src/happy/native-connector.mjs';
 import { CommandReceipts } from '../src/commands.mjs';
 import { BridgeError } from '../src/errors.mjs';
 import { encryptRecord, decryptRecord } from '../src/happy/session-transport.mjs';
+import { readObserverHistoryArchives } from '../src/happy/observer-history.mjs';
 
 /** @typedef {Record<string,any>} Value */
 class FixtureTransport extends EventEmitter {
@@ -26,8 +27,11 @@ class FixtureTransport extends EventEmitter {
 }
 class FixtureAdapter {
   supportsNativeModelSettings = false;
+  completeReads = 0;
   constructor(/** @type {Value} */ view = {}) { this.view = /** @type {Value} */ ({ status: 'idle', currentTurnId: null, rows: [], requests: [], revision: 1, ...view }); this.calls = /** @type {Value[]} */ ([]); this.callback = /** @type {((view:Value)=>void)|null} */ (null); this.fail = false; this.noIdentity = false; this.beforeSnapshot = /** @type {(()=>void)|null} */ (null); }
   async snapshot(/** @type {string} */ _id) { this.beforeSnapshot?.(); return structuredClone(this.view); }
+  async freshSnapshot(/** @type {string} */ nativeId) { return this.snapshot(nativeId); }
+  async completeSnapshot(/** @type {string} */ nativeId) { this.completeReads++; this.view.historyComplete = true; return this.snapshot(nativeId); }
   async subscribe(/** @type {string} */ _id, /** @type {(view:Value)=>void} */ callback) { this.callback = callback; callback(structuredClone(this.view)); return () => { this.callback = null; }; }
   emit() { this.view.revision++; this.callback?.(structuredClone(this.view)); }
   /** @returns {Promise<Value>} */
@@ -45,11 +49,169 @@ async function fixture(/** @type {Value} */ view = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'happy-native-fixture-')), transport = new FixtureTransport(), adapter = new FixtureAdapter(view);
   const receiptsPath = join(directory, 'receipts.json'); let epoch = 'owner-1', lease = true;
   const options = { transport, adapter, nativeId: 'original-native-id', sourceIdentity: { app: 'codex', id: 'original-native-id', hostId: 'local' }, bindingId: 'fixture-binding', metadata: { path: '', host: 'fixture', client: { id: 'noninvasive-bridge', name: 'Fixture', version: '1' } }, statePath: join(directory, 'connector.json'), encryptionKey: new Uint8Array(32).fill(9), getGeneration: () => epoch, assertLease: () => lease, admissionTimeoutMs: 25 };
-  const create = async () => new NativeHappyConnector({ ...options, receipts: await CommandReceipts.load(receiptsPath) });
+  const create = async (/** @type {Value} */ overrides = {}) => new NativeHappyConnector({ ...options, ...overrides, receipts: await CommandReceipts.load(receiptsPath) });
   return { directory, transport, adapter, options, create, epoch: (/** @type {string} */ value) => { epoch = value; }, lease: (/** @type {boolean} */ value) => { lease = value; }, dispose: () => rm(directory, { recursive: true, force: true }) };
 }
 const user = (/** @type {string} */ text) => ({ role: 'user', content: { type: 'text', text } });
 const events = (/** @type {FixtureTransport} */ transport) => transport.records.map(item => item.record.content);
+
+test('an accepted native row publishes and retains the old steering wire identities in fresh seeds', async () => {
+  const f = await fixture({ rows: [{ id: 'temporary-steering-uuid', role: 'user', text: 'Original input', turnId: 'original-turn', commandId: 'original-caller' }] });
+  const connector = await f.create();
+  try {
+    await connector.start(); const oldWire = events(f.transport).find(event => event.ev.t === 'text').id;
+    f.adapter.view.rows = [{ id: 'accepted-user-row', role: 'user', text: 'Original input', turnId: 'original-turn', commandId: 'original-caller', replaceSourceRowIds: ['temporary-steering-uuid'] }]; f.adapter.view.revision++;
+    await connector.project(f.adapter.view);
+    const update = events(f.transport).find(event => event.ev.t === 'native-row-upsert' && event.ev.sourceRowId === 'accepted-user-row');
+    assert.ok(update); assert.ok(update.ev.replaceIds.includes(oldWire));
+    const recent = await connector.readRecent({ limit: 20 });
+    assert.ok(recent.rows[0].replaceIds.includes(oldWire)); assert.deepEqual(recent.rows[0].replaceSourceRowIds, ['temporary-steering-uuid']);
+    assert.equal(f.adapter.calls.length, 0);
+  } finally { await connector.close(); await f.dispose(); }
+});
+
+test('a near-capacity legacy checkpoint archives acknowledged bodies and old prefixes without replaying unknown commands', async () => {
+  const f = await fixture({ rows: [{ id: 'current-row', role: 'assistant', text: 'Current', turnId: 'current-turn', status: 'completed' }] });
+  let connector = await f.create({ recentRowLimit: 2 });
+  try {
+    await connector.start(); await connector.close();
+    const file = JSON.parse(await readFile(f.options.statePath, 'utf8')), state = /** @type {Value} */ (decryptRecord(file.ciphertext, f.options.encryptionKey));
+    const prefix = 'P'.repeat(11 * 1024 * 1024), body = 'B'.repeat(1024 * 1024);
+    const legacy = Array.from({ length: 15 }, (_, index) => ({ id: `legacy-acked-event-${index}`, localId: `legacy-acked-event-${index}-observed`, ciphertext: encryptRecord({ role: 'session', content: { ev: { t: 'text', text: body } } }, f.options.encryptionKey), sent: true }));
+    state.events.push(...legacy);
+    state.rows.push({ id: 'old-row', role: 'assistant', turnId: 'old-turn', text: prefix,
+      digest: createHmac('sha256', f.options.encryptionKey).update(JSON.stringify(prefix)).digest('hex'), eventIds: legacy.map(event => event.id), revision: 3, rowIdentityVersion: 1 });
+    const unknown = { id: 'old-unknown-reply', origin: 'rpc', action: 'answer-question', payload: { questionItemId: 'old-question', answer: 'original draft' }, epoch: 'previous-owner', state: 'unknown', error: 'delivery-unknown' };
+    state.commands.push(unknown); delete state.activeRowIds;
+    const originalEvents = structuredClone(state.events);
+    assert.ok(Buffer.byteLength(JSON.stringify(state)) < 32 * 1024 * 1024);
+    const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', f.options.encryptionKey, nonce), encoded = Buffer.from(JSON.stringify(state));
+    file.ciphertext = Buffer.concat([Buffer.from([0]), nonce, cipher.update(encoded), cipher.final(), cipher.getAuthTag()]).toString('base64'); await writeFile(f.options.statePath, JSON.stringify(file));
+    f.adapter.view.rows.push({ id: 'new-row', role: 'assistant', text: 'N'.repeat(1024 * 1024), turnId: 'current-turn', status: 'completed' }); f.adapter.view.revision++;
+    connector = await f.create({ recentRowLimit: 2 }); await connector.start();
+    let hot = /** @type {Value} */ (decryptRecord(JSON.parse(await readFile(f.options.statePath, 'utf8')).ciphertext, f.options.encryptionKey));
+    assert.ok(Buffer.byteLength(JSON.stringify(hot)) < 8 * 1024 * 1024);
+    assert.deepEqual(hot.commands.find((/** @type {Value} */ command) => command.id === unknown.id), unknown);
+    assert.deepEqual(hot.rows.find((/** @type {Value} */ row) => row.id === 'old-row').eventIds, legacy.map(event => event.id));
+    const history = await readObserverHistoryArchives(hot, f.options.statePath, f.options.encryptionKey);
+    for (const event of originalEvents) assert.deepEqual(history.events.find(saved => saved.id === event.id), event);
+    const oldRow = history.rows.find(row => row.id === 'old-row'); assert.ok(oldRow); assert.equal(oldRow.text, prefix);
+    assert.equal(f.transport.records.some(item => legacy.some(event => item.localId === event.localId)), false);
+    f.adapter.view.rows = [{ id: 'old-row', role: 'assistant', text: prefix + ' extended', turnId: 'old-turn', status: 'completed' }]; f.adapter.view.revision++;
+    await connector.project(f.adapter.view);
+    const delta = events(f.transport).filter(event => event.ev.t === 'text').at(-1);
+    assert.ok(delta);
+    assert.equal(delta.ev.text, ' extended');
+    hot = /** @type {Value} */ (decryptRecord(JSON.parse(await readFile(f.options.statePath, 'utf8')).ciphertext, f.options.encryptionKey));
+    assert.equal(hot.rows.find((/** @type {Value} */ row) => row.id === 'old-row').text, prefix + ' extended');
+    assert.equal(f.adapter.calls.length, 0);
+  } finally { await connector.close(); await f.dispose(); }
+});
+
+test('an identical full snapshot with empty bootstrap does not rewrite the encrypted checkpoint', async () => {
+  const f = await fixture({ contentStamp: 'unchanged-public-view', rows: [{ id: 'stable-row', role: 'assistant', text: 'Stable content', turnId: 'stable-turn', status: 'completed' }] });
+  const connector = await f.create();
+  try { await connector.start(); const before = await readFile(f.options.statePath, 'utf8');
+    await connector.project(f.adapter.view); await connector.project(f.adapter.view);
+    assert.equal(await readFile(f.options.statePath, 'utf8'), before);
+  } finally { await connector.close(); await f.dispose(); }
+});
+
+test('unknown question replies recover only from the accepted original command ID under the same epoch', async () => {
+  const f = await fixture({ rows: [{ id: 'question-row', role: 'assistant', text: '', turnId: 'question-turn', asyncQuestions: [{ questionItemId: 'strict-question', title: 'Choose', options: ['A'], answered: false }] }] });
+  const connector = await f.create();
+  try {
+    await connector.start(); f.adapter.fail = true;
+    const id = 'strict-question-answer', key = Object.keys(f.transport.agentState.communications)[0];
+    await assert.rejects(f.transport.rpc('communication', { commandId: id, id: key, status: 'answered', answers: { answer: { options: ['A'] } } }));
+    f.adapter.view.rows.push({ id: 'pending-steer', role: 'user', text: 'Choose\nA', commandId: id, turnId: 'question-turn', inputStatus: 'pending' });
+    await connector.project(f.adapter.view);
+    assert.equal((await f.transport.rpc('bridge-receipt', { commandId: id })).receipt.status, 'unknown');
+    f.adapter.view.rows.at(-1).inputStatus = 'accepted';
+    await connector.project(f.adapter.view);
+    const recovered = (await f.transport.rpc('bridge-receipt', { commandId: id })).receipt;
+    assert.equal(recovered.status, 'complete'); assert.equal(recovered.nativeReceiptStatus, 'unknown'); assert.equal(f.adapter.calls.length, 1);
+  } finally { await connector.close(); await f.dispose(); }
+});
+
+test('text suffixes preserve native identity and confirmed user rows replace provisional echoes', async () => {
+  const f = await fixture({ currentTurnId: 'turn-1', status: 'active', rows: [{ id: 'assistant-row', role: 'assistant', text: 'Hello', turnId: 'turn-1', status: 'inProgress' }] });
+  const connector = await f.create();
+  try {
+    await connector.start();
+    f.adapter.view.rows[0].text += ' world'; await connector.project(f.adapter.view);
+    const text = f.transport.records.filter(item => item.record.content.ev.t === 'text');
+    assert.deepEqual(text.map(item => item.record.meta.nativeRow), [{ id: 'assistant-row', offset: 0, revision: 0 }, { id: 'assistant-row', offset: 5, revision: 0 }]);
+    f.adapter.view.rows.push({ id: 'pending-user:client-id', role: 'user', text: 'Reply', commandId: 'client-id', turnId: 'turn-1' });
+    await connector.project(f.adapter.view);
+    const provisional = events(f.transport).find(event => event.ev.t === 'text' && event.ev.text === 'Reply'); assert.ok(provisional);
+    f.adapter.view.rows[1] = { id: 'confirmed-user', role: 'user', text: 'Reply', commandId: 'client-id', turnId: 'turn-1' };
+    await connector.project(f.adapter.view);
+    const replacement = events(f.transport).find(event => event.ev.t === 'native-row-upsert' && event.ev.sourceRowId === 'confirmed-user');
+    assert.ok(replacement); assert.ok(replacement.ev.replaceIds.includes(provisional.id));
+    assert.equal(f.adapter.calls.length, 0);
+  } finally { await connector.close(); await f.dispose(); }
+});
+
+test('unchanged legacy text receives one full identity replacement without replaying commands', async () => {
+  const f = await fixture({ rows: [{ id: 'legacy-row', role: 'assistant', text: 'Existing complete text', turnId: 'turn-1', status: 'completed' }] });
+  let connector = await f.create();
+  try {
+    await connector.start(); await connector.close();
+    const file = JSON.parse(await readFile(f.options.statePath, 'utf8'));
+    const state = /** @type {Value} */ (decryptRecord(file.ciphertext, f.options.encryptionKey));
+    for (const row of state.rows) delete row.rowIdentityVersion;
+    file.ciphertext = encryptRecord(state, f.options.encryptionKey);
+    await writeFile(f.options.statePath, JSON.stringify(file));
+    connector = await f.create(); await connector.start(); await connector.project(f.adapter.view);
+    const replacements = events(f.transport).filter(event => event.ev.t === 'native-row-upsert' && event.ev.sourceRowId === 'legacy-row');
+    assert.equal(replacements.length, 1); assert.equal(replacements[0].ev.text, 'Existing complete text');
+    assert.equal(f.adapter.calls.length, 0);
+  } finally { await connector.close(); await f.dispose(); }
+});
+
+test('a fresh own input supplies broker and local aliases instead of creating another phone user message', async () => {
+  const f = await fixture(); const connector = await f.create();
+  try {
+    await connector.start(); f.transport.inject(user('Own phone input'), 'phone-local-alias', 'server-user-alias');
+    await connector.processInbox();
+    const recent = await connector.readRecent();
+    const own = recent.rows.find((/** @type {Value} */ row) => row.role === 'user'); assert.ok(own);
+    assert.ok(own.replaceIds.includes('server-user-alias')); assert.ok(own.replaceIds.includes('phone-local-alias'));
+    assert.equal(f.adapter.calls.length, 1);
+  } finally { await connector.close(); await f.dispose(); }
+});
+
+test('recent native reads return complete rows and advance seed version for changed same-revision snapshots without commands', async () => {
+  const f = await fixture({ currentTurnId: 'original-turn', status: 'active', rows: [{ id: 'native-text', role: 'assistant', text: 'complete base', turnId: 'original-turn', at: 10, status: 'inProgress' }] });
+  const connector = await f.create();
+  try {
+    const first = await connector.readRecent();
+    assert.equal(first.rows[0].text, 'complete base'); assert.ok(first.rows[0].replaceIds.length > 0);
+    f.adapter.view.rows[0].text += ' and current suffix'; // The original silent snapshot revision intentionally stays 1.
+    const second = await connector.readRecent();
+    assert.equal(second.revision, first.revision); assert.equal(second.rows[0].text, 'complete base and current suffix');
+    assert.ok(second.rows[0].snapshotRevision > first.rows[0].snapshotRevision);
+    assert.equal(second.rows[0].streamRevision, first.rows[0].streamRevision); assert.equal(f.adapter.calls.length, 0);
+    assert.equal(connector.status().activeOperations, 0);
+  } finally { await connector.close(); await f.dispose(); }
+});
+test('bounded real observation retains full history evidence without publishing older rows or loading history on entry', async () => {
+  const rows = Array.from({ length: 200 }, (_, index) => ({ id: `native-${index}`, role: 'assistant', text: `complete-${index}`, turnId: 'original-turn', at: index, status: 'completed' }));
+  const f = await fixture({ rows, historyComplete: false }); Object.assign(f.options, { recentRowLimit: 100 });
+  const connector = await f.create();
+  try {
+    const first = await connector.readRecent();
+    assert.equal(first.rows[0].id, 'native-150'); assert.equal(f.adapter.completeReads, 0);
+    assert.equal(events(f.transport).filter(event => event.ev.t === 'text').length, 100);
+    const older = await connector.readRecent({ fresh: false, cursor: first.nextCursor });
+    assert.equal(f.adapter.completeReads, 1); assert.equal(older.historyComplete, true);
+    const earlier = await connector.readRecent({ fresh: false, cursor: older.nextCursor });
+    assert.equal(earlier.rows[0].id, 'native-50'); assert.equal(f.adapter.completeReads, 1);
+    assert.equal(events(f.transport).filter(event => event.ev.t === 'text').length, 100);
+    assert.equal(f.adapter.calls.length, 0);
+  } finally { await connector.close(); await f.dispose(); }
+});
 
 test('RPC identity includes the method and cannot reinterpret an open receipt as a successful abort', async () => {
   const f = await fixture({ currentTurnId: 'original-turn' });
@@ -174,7 +336,10 @@ test('bootstrap identity initializes prefix, Unicode suffix publishes once and n
     f.adapter.view.rows[0].text = 'Hello 😀\n中文'; await connector.project(f.adapter.view);
     assert.equal(events(f.transport).find(item => item.ev.t === 'text')?.ev.text, ' 😀\n中文'); const before = f.transport.records.length; await connector.project(f.adapter.view); assert.equal(f.transport.records.length, before);
     f.adapter.view.rows[0].text = 'corrected text'; await connector.project(f.adapter.view);
-    const replace = events(f.transport).find(item => item.ev.t === 'native-row-upsert'); assert.ok(replace); assert.equal(replace.ev.text, 'corrected text'); assert.ok(replace.ev.replaceIds.includes(bootstrap)); assert.equal(connector.status().projectionStatus, 'resync-required'); assert.equal(f.adapter.calls.length, 0);
+    const replacements = events(f.transport).filter(item => item.ev.t === 'native-row-upsert');
+    assert.ok(replacements[0].ev.replaceIds.includes(bootstrap));
+    const replace = replacements.at(-1); assert.ok(replace); assert.equal(replace.ev.text, 'corrected text');
+    assert.ok(replace.ev.replaceIds.includes(replacements[0].id)); assert.equal(connector.status().projectionStatus, 'resync-required'); assert.equal(f.adapter.calls.length, 0);
   } finally { await connector.close(); await f.dispose(); }
 });
 

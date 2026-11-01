@@ -5,11 +5,10 @@ import { ItemList } from '@/components/ItemList';
 import { useSettingMutable, useLocalSettingMutable } from '@/sync/storage';
 import { useRouter } from 'expo-router';
 import * as Localization from 'expo-localization';
-import { StyleSheet, useUnistyles, UnistylesRuntime } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Switch } from '@/components/Switch';
-import { Appearance, Platform, Pressable, Text, View } from 'react-native';
-import * as SystemUI from 'expo-system-ui';
-import { darkTheme, lightTheme } from '@/theme';
+import { Platform, Pressable, Text, View } from 'react-native';
+import { applyAppThemePreference } from '@/utils/appThemePreference';
 import { type SessionListGrouping } from '@/sync/settings';
 import { t, getLanguageNativeName, SUPPORTED_LANGUAGES } from '@/text';
 import {
@@ -268,32 +267,8 @@ export default function AppearanceSettingsScreen() {
                         const nextIndex = (currentIndex + 1) % 3;
                         const nextTheme = nextIndex === 0 ? 'adaptive' : nextIndex === 1 ? 'light' : 'dark';
                         
-                        // Update the setting
                         setThemePreference(nextTheme);
-
-                        // Keep the NATIVE appearance in step: SwiftUI menus,
-                        // the keyboard, and native context menus follow UIKit,
-                        // not unistyles (see unistyles.ts).
-                        if (Platform.OS !== 'web') {
-                            Appearance.setColorScheme(nextTheme === 'adaptive' ? 'unspecified' : nextTheme);
-                        }
-                        
-                        // Apply the theme change immediately
-                        if (nextTheme === 'adaptive') {
-                            // Enable adaptive themes and set to system theme
-                            UnistylesRuntime.setAdaptiveThemes(true);
-                            const systemTheme = Appearance.getColorScheme();
-                            const color = systemTheme === 'dark' ? darkTheme.colors.groupped.background : lightTheme.colors.groupped.background;
-                            UnistylesRuntime.setRootViewBackgroundColor(color);
-                            SystemUI.setBackgroundColorAsync(color);
-                        } else {
-                            // Disable adaptive themes and set explicit theme
-                            UnistylesRuntime.setAdaptiveThemes(false);
-                            UnistylesRuntime.setTheme(nextTheme);
-                            const color = nextTheme === 'dark' ? darkTheme.colors.groupped.background : lightTheme.colors.groupped.background;
-                            UnistylesRuntime.setRootViewBackgroundColor(color);
-                            SystemUI.setBackgroundColorAsync(color);
-                        }
+                        applyAppThemePreference(nextTheme);
                     }}
                 />
             </ItemGroup>

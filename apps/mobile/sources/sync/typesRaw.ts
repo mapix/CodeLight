@@ -25,7 +25,11 @@ const agentEventSchema = z.discriminatedUnion('type', [z.object({
     role: z.enum(['user', 'assistant', 'reasoning', 'tool']),
     text: z.string(),
     revision: z.number().int().positive(),
+    snapshotRevision: z.number().int().positive().optional(),
+    streamRevision: z.number().int().nonnegative().optional(),
+    ownerGeneration: z.string().optional(),
     replaceIds: z.array(z.string()),
+    replaceSourceRowIds: z.array(z.string().min(1)).optional(),
     tools: z.array(z.object({ id: z.string(), name: z.string().optional(), output: z.string(), status: z.string() })).optional(),
 }), z.object({
     type: z.literal('switch'),
@@ -72,7 +76,11 @@ const sessionNativeRowUpsertSchema = z.object({
     role: z.enum(['user', 'assistant', 'reasoning', 'tool']),
     text: z.string(),
     revision: z.number().int().positive(),
+    snapshotRevision: z.number().int().positive().optional(),
+    streamRevision: z.number().int().nonnegative().optional(),
+    ownerGeneration: z.string().optional(),
     replaceIds: z.array(z.string()),
+    replaceSourceRowIds: z.array(z.string().min(1)).optional(),
     tools: z.array(z.object({ id: z.string(), name: z.string().optional(), output: z.string(), status: z.string() })).optional(),
 });
 

@@ -4,19 +4,22 @@
  */
 import { EventEmitter } from 'node:events';
 import { pendingNativeAsyncQuestions } from '../native-question-scope.mjs';
+import { recentRowsPage } from './recent-data.mjs';
 import { createHash, createHmac, createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { readFile, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { BridgeError } from '../errors.mjs';
 import { nativeCauseCode } from '../commands.mjs';
 import { encryptRecord, decryptRecord } from './session-transport.mjs';
+import { archiveObserverCheckpointPayload, readArchivedObserverRows, validateObserverHistoryReferences } from './observer-history.mjs';
 import { SOURCE_APPS } from './source-registry.mjs';
 import { notificationSummary } from './notification-dispatcher.mjs';
+import { rpcTarget } from '@slopus/happy-wire/codelight';
 
 /** @typedef {Record<string, any>} Value */
-/** @typedef {{snapshot:(id:string)=>Promise<Value>,subscribe:(id:string,onView:(view:Value)=>void)=>Promise<()=>void>,command:(id:string,action:string,payload:Value,commandId:string,context?:{expectedGeneration:string|null})=>Promise<Value>,supportsNativeModelSettings?:boolean}} NativeAdapter */
+/** @typedef {{snapshot:(id:string)=>Promise<Value>,freshSnapshot?:(id:string)=>Promise<Value>,completeSnapshot?:(id:string)=>Promise<Value>,subscribe:(id:string,onView:(view:Value)=>void)=>Promise<()=>void>,command:(id:string,action:string,payload:Value,commandId:string,context?:{expectedGeneration:string|null})=>Promise<Value>,supportsNativeModelSettings?:boolean}} NativeAdapter */
 /** @typedef {{run:(scope:string,id:string,payload:unknown,execute:()=>Promise<unknown>)=>Promise<any>,query:(scope:string,id:string)=>any}} Receipts */
-/** @typedef {{transport:any,adapter:NativeAdapter,nativeId:string,sourceIdentity:Value,bindingId:string,metadata?:Value,receipts:Receipts,statePath:string,encryptionKey:Uint8Array,getGeneration?:()=>unknown|Promise<unknown>,assertLease?:()=>unknown|Promise<unknown>,leaseRequired?:boolean,admissionTimeoutMs?:number,supportsNativeProjection?:boolean}} ConnectorOptions */
+/** @typedef {{transport:any,adapter:NativeAdapter,nativeId:string,sourceIdentity:Value,bindingId:string,metadata?:Value,receipts:Receipts,statePath:string,encryptionKey:Uint8Array,getGeneration?:()=>unknown|Promise<unknown>,assertLease?:()=>unknown|Promise<unknown>,leaseRequired?:boolean,admissionTimeoutMs?:number,supportsNativeProjection?:boolean,recentRowLimit?:number}} ConnectorOptions */
 const owners = new Set();
 const BAD_SOURCE = new Set(['owner-unavailable', 'disconnected', 'locked', 'permission-required', 'unavailable', 'codex-unavailable', 'not-loaded']);
 const SAFE_NATIVE_ERRORS = new Set(['stale-turn', 'stale-question', 'stale-approval', 'unsupported-action', 'unsupported-approval', 'invalid-input', 'invalid-turn', 'invalid-payload', 'invalid-response', 'invalid-answer-identity', 'approval-details-unavailable', 'permission-expansion', 'source-epoch-changed', 'source-generation-unavailable', 'source-lease-unavailable', 'source-unavailable', 'settings-conflict', 'unsupported-model-settings', 'native-settings-unavailable', 'native-model-catalog-unavailable', 'invalid-settings']);
@@ -49,6 +52,7 @@ function observedInputRow(view, commandId, messageId) {
   // 失败的本地 admission 也会留下带 caller ID 的占位输入；没有原 turn ID 就不能据此确认消息已接受。
   return (view.rows ?? []).find((/** @type {Value} */ row) => row.role === 'user' &&
     typeof row.turnId === 'string' && row.turnId.trim() &&
+    !['pending', 'rejected', 'failed'].includes(row.inputStatus) &&
     (row.commandId === commandId || messageId && row.id === messageId) && !['draft', 'optimistic'].includes(row.status));
 }
 
@@ -88,6 +92,7 @@ export class NativeHappyConnector extends EventEmitter {
   constructor(options) {
     super({ captureRejections: true });
     this.#options = options;
+    if (options.recentRowLimit !== undefined && (!Number.isSafeInteger(options.recentRowLimit) || options.recentRowLimit < 1 || options.recentRowLimit > 200)) throw new BridgeError('invalid-row-limit', 'The recent observation row limit is invalid.');
     this.nativeId = id(options.nativeId, 'Original native id'); this.bindingId = id(options.bindingId, 'Stable binding id');
     if (!object(options.sourceIdentity) || !SOURCE_APPS.includes(options.sourceIdentity.app) || options.sourceIdentity.id !== this.nativeId) throw new BridgeError('invalid-source-identity', 'Bind the verified original source identity, not a Happy session id.');
     if (!(options.encryptionKey instanceof Uint8Array) || options.encryptionKey.length !== 32 || !isAbsolute(options.statePath)) throw new BridgeError('invalid-connector-options', 'An owned absolute checkpoint path and 32-byte key are required.');
@@ -101,6 +106,46 @@ export class NativeHappyConnector extends EventEmitter {
     sourceStatus: this.#state.sourceStatus ?? 'owner-unavailable', currentTurnId: this.#view.currentTurnId ?? null,
     projectionStatus: this.#state.projectionStatus ?? 'unknown', commands: this.#state.commands?.length ?? 0,
     pendingEvents: this.#state.events?.filter((/** @type {Value} */ event) => !event.sent).length ?? 0 }; }
+
+  /** Full row seeds for an authenticated selected-session read, never a new native command.
+   * @param {{fresh?:boolean,cursor?:unknown,limit?:unknown}} [options] @returns {Promise<Value>} */
+  async readRecent(options = {}) {
+    return this.#operation(async () => {
+    if (this.#closed || this.#retiring) throw new BridgeError('source-unavailable', 'The selected observer is unavailable.', 503);
+    await this.start();
+    if (this.#closed || this.#retiring) throw new BridgeError('source-unavailable', 'The selected observer is unavailable.', 503);
+    if (options.fresh !== false) {
+      if (typeof this.#options.adapter.freshSnapshot !== 'function') throw new BridgeError('fresh-native-unavailable', 'This observer cannot confirm a fresh original-owner view.', 503);
+      const fresh = viewOf(await this.#options.adapter.freshSnapshot(this.nativeId));
+      if (!available(fresh)) throw new BridgeError('source-unavailable', 'The original owner did not provide a fresh usable view.', 503);
+      if (this.#closed || this.#retiring || typeof fresh.ownerGeneration === 'string' && fresh.ownerGeneration !== await this.#epoch()) throw new BridgeError('source-epoch-changed', 'The original owner changed during the recent read.', 409);
+      await this.project(fresh);
+    } else if (options.cursor && this.#view.historyComplete === false) {
+      if (typeof this.#options.adapter.completeSnapshot !== 'function') throw new BridgeError('complete-history-unavailable', 'The original observer cannot load earlier native history.', 503);
+      const complete = viewOf(await this.#options.adapter.completeSnapshot(this.nativeId));
+      if (!available(complete) || complete.historyComplete !== true) throw new BridgeError('complete-history-unconfirmed', 'The original owner has not confirmed complete history.', 503);
+      if (this.#closed || this.#retiring || typeof complete.ownerGeneration === 'string' && complete.ownerGeneration !== await this.#epoch()) throw new BridgeError('source-epoch-changed', 'The original owner changed during the history read.', 409);
+      await this.project(complete);
+    }
+    const view = this.#view;
+    if (this.#closed || this.#retiring || !available(view)) throw new BridgeError('source-unavailable', 'The original native view is unavailable.', 503);
+    if (typeof view.ownerGeneration === 'string' && view.ownerGeneration !== await this.#epoch()) throw new BridgeError('source-epoch-changed', 'The original owner changed during the native read.', 409);
+    const page = recentRowsPage(this.#options.transport.sessionId, view.rows ?? [], { ...options, historyComplete: view.historyComplete });
+    return { ...page, rows: page.rows.map((/** @type {Value} */ row) => {
+      const saved = this.#state.rows.find((/** @type {Value} */ item) => item.id === row.id);
+      const ownInput = row.role === 'user' ? this.#state.commands.find((/** @type {Value} */ command) => command.origin === 'message'
+        && command.admission?.confirmed && (row.commandId === command.id || command.result?.messageId === row.id)) : null;
+      // 首屏不能再复制手机已确认的输入；原 broker/local id 把 native 行接回同一个 optimistic/echo 行。
+      const inputAliases = ownInput ? [ownInput.serverId, ownInput.key?.startsWith('message:') ? ownInput.key.slice(8) : null].filter(Boolean) : [];
+      const streamRevision = row.role === 'tool' ? Math.max(0, ...(row.tools ?? []).map((/** @type {Value} */ tool) => this.#state.rows.find((/** @type {Value} */ item) => item.id === `tool:${tool.id}`)?.revision ?? 0)) : saved?.revision ?? 0;
+      // 首屏完整原生行替换明确的镜像片段，不能把最近50条协议增量误当作50条完整消息。
+      return { ...row, replaceIds: [...new Set([...(saved?.eventIds ?? []), ...(saved?.replacedWireIds ?? []), ...inputAliases])], projectionRevision: Math.max(1, streamRevision), streamRevision,
+        snapshotRevision: this.#state.recentVersion ?? 1, ownerGeneration: this.#state.epoch };
+    }), revision: view.revision ?? null, ownerGeneration: this.#state.epoch, status: view.status,
+      currentTurnId: view.currentTurnId ?? null, seq: this.#options.transport.peerSnapshot?.().seq ?? 0,
+      historyComplete: view.historyComplete ?? null, historyCoverage: view.historyComplete === true ? 'complete-native-view' : 'loaded-native-view' };
+    });
+  }
 
   start() {
     if (!this.#startFlight) { this.#starting = true; this.#startFlight = this.#start().catch(async error => {
@@ -195,6 +240,7 @@ export class NativeHappyConnector extends EventEmitter {
       catch { throw new BridgeError('connector-decryption-failed', 'The connector checkpoint could not be decrypted.'); }
       if (!Array.isArray(this.#state.rows) || !Array.isArray(this.#state.events) || !Array.isArray(this.#state.commands) || !Array.isArray(this.#state.turns)) throw new BridgeError('invalid-connector-checkpoint', 'The connector checkpoint is missing required journals.');
       this.#diskText = stored;
+      await validateObserverHistoryReferences(this.#state, this.statePath);
       for (const command of this.#state.commands) {
         if (command.state === 'dispatching') { command.state = 'unknown'; command.error = 'connector-restarted'; }
         // 修复旧版本对无 turn ID 占位行的误确认；只纠正派生回执，原命令及 unknown 记录保留且不重新派发。
@@ -213,7 +259,12 @@ export class NativeHappyConnector extends EventEmitter {
   async #save(state, identity = state.identity) {
     let current = null; try { current = await readFile(this.statePath, 'utf8'); } catch (error) { if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error; }
     if (current !== this.#diskText) throw new BridgeError('connector-checkpoint-conflict', 'The owned connector checkpoint changed elsewhere.');
-    const plain = Buffer.from(JSON.stringify(state)); if (plain.length > 32 * 1024 * 1024) throw new BridgeError('connector-capacity', 'The connector checkpoint reached its explicit size bound.');
+    let plain = Buffer.from(JSON.stringify(state));
+    if (this.#options.sourceIdentity.app === 'codex' && plain.length >= 8 * 1024 * 1024) {
+      // 已确认镜像及离开窗口的完整前缀有独立加密历史；命令、未发事件与行别名仍由当前检查点拥有。
+      if (await archiveObserverCheckpointPayload(state, this.statePath, this.#key, plain.length > 32 * 1024 * 1024 ? 0 : 4 * 1024 * 1024)) plain = Buffer.from(JSON.stringify(state));
+    }
+    if (plain.length > 32 * 1024 * 1024) throw new BridgeError('connector-capacity', 'The connector checkpoint reached its explicit size bound.');
     const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', this.#key, nonce), encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
     const text = JSON.stringify({ format: 'happy-native-connector-v1', identity, ciphertext: Buffer.concat([Buffer.from([0]), nonce, encrypted, cipher.getAuthTag()]).toString('base64') });
     const folder = dirname(this.statePath); await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -266,6 +317,7 @@ export class NativeHappyConnector extends EventEmitter {
 
   async #collectBootstrap() {
     const candidates = this.#options.transport.listInbox().filter((/** @type {Value} */ incoming) => incoming.record?.role === 'session' && typeof (incoming.record.content?.data ?? incoming.record.content)?.ev?.text === 'string');
+    if (!candidates.some((/** @type {Value} */ candidate) => !this.#state.bootstrap?.some((/** @type {Value} */ item) => item.serverId === candidate.id))) return;
     await this.#mutate(state => {
       state.bootstrap ??= [];
       for (const candidate of candidates) if (!state.bootstrap.some((/** @type {Value} */ item) => item.serverId === candidate.id)) state.bootstrap.push({ serverId: candidate.id, ciphertext: encryptRecord(candidate.record, this.#key) });
@@ -274,9 +326,12 @@ export class NativeHappyConnector extends EventEmitter {
 
   /** @param {Value} view */
   async #seedBootstrap(view) {
+    if (!this.#state.bootstrap?.length) return;
+    const known = new Set(this.#state.rows.map((/** @type {Value} */ row) => row.id));
+    if (!this.#mirrorRows(view).some(row => !known.has(row.id))) return;
     const inbox = (this.#state.bootstrap ?? []).map((/** @type {Value} */ saved) => ({ record: decryptRecord(saved.ciphertext, this.#key) }));
     await this.#mutate(state => {
-      for (const row of view.rows ?? []) {
+      for (const row of this.#mirrorRows(view)) {
         if (state.rows.some((/** @type {Value} */ entry) => entry.id === row.id)) continue;
         if (!row.id || !row.turnId || typeof row.text !== 'string' || !['user', 'assistant', 'reasoning'].includes(row.role)) continue;
         const expected = 'ni' + createHash('sha256').update(`${this.nativeId}:${row.id}:bootstrap`).digest('hex').slice(0, 28);
@@ -303,7 +358,10 @@ export class NativeHappyConnector extends EventEmitter {
     const actual = viewOf(view), epoch = await this.#epoch();
     if (this.#closed || this.#retiring) return;
     if (epoch === this.#state.epoch && Number.isSafeInteger(actual.revision) && Number.isSafeInteger(this.#state.lastViewRevision) && actual.revision < this.#state.lastViewRevision) { this.emit('diagnostic', { code: 'stale-native-projection' }); return; }
-    this.#view = actual; this.#pendingView = structuredClone(actual);
+    this.#view = actual;
+    if (!this.#projectFlight && !this.#pendingView && actual.contentStamp
+      && this.#state.recentStamp === `${epoch ?? 'unknown'}:${actual.contentStamp}` && this.#state.epoch === epoch) return;
+    this.#pendingView = structuredClone(actual);
     if (!this.#projectFlight) this.#projectFlight = (async () => { while (this.#pendingView && !this.#closed) { const next = this.#pendingView; this.#pendingView = null; await this.#project(next); } })().finally(() => { this.#projectFlight = null; });
     return this.#projectFlight;
   }
@@ -312,14 +370,21 @@ export class NativeHappyConnector extends EventEmitter {
   async #project(view) {
     const epoch = await this.#epoch(), lease = await this.#lease();
     await this.#seedBootstrap(view);
+    const activeRowIds = new Set(this.#mirrorRows(view).flatMap(row => [row.id, ...(row.tools ?? []).map((/** @type {Value} */ tool) => `tool:${tool.id}`)]));
+    const restoredRows = await readArchivedObserverRows(this.#state, this.statePath, this.#key, activeRowIds);
     await this.#mutate(state => {
+      for (const [rowId, row] of restoredRows) {
+        const index = state.rows.findIndex((/** @type {Value} */ item) => item.id === rowId);
+        if (index >= 0 && state.rows[index].historyRef) state.rows[index] = row;
+      }
+      state.activeRowIds = [...activeRowIds];
       state.sourceStatus = available(view) ? (view.status === 'locked' ? 'locked' : 'connected') : view.status === 'locked' ? 'locked' : 'owner-unavailable';
       state.epoch = epoch; state.currentTurnId = view.currentTurnId ?? null;
       state.lastViewRevision = Number.isSafeInteger(view.revision) ? view.revision : null;
       if (view.kind === 'window' || this.#options.sourceIdentity.app !== 'codex') return;
       this.#reconcileCommands(state, view);
       const groups = new Map();
-      for (const row of view.rows ?? []) {
+      for (const row of this.#mirrorRows(view)) {
         if (!row.id || !row.turnId) continue;
         groups.set(row.turnId, [...(groups.get(row.turnId) ?? []), row]);
         let entry = state.rows.find((/** @type {Value} */ item) => item.id === row.id);
@@ -331,19 +396,30 @@ export class NativeHappyConnector extends EventEmitter {
         if (!entry) { entry = { id: row.id, turnId: row.turnId, role: row.role, text: '', digest: this.#mac(''), eventIds: [], revision: 0 }; state.rows.push(entry); }
         if (['user', 'assistant', 'reasoning'].includes(row.role) && typeof row.text === 'string') {
           const text = safePrefix(row.text); if (entry.digest !== this.#mac(entry.text)) throw new BridgeError('prefix-integrity-error', 'The stored native text prefix did not match its HMAC.');
-          if (text === entry.text) continue;
+          const replacedSources = Array.isArray(row.replaceSourceRowIds) ? row.replaceSourceRowIds : [];
+          const aliasesChanged = stable(entry.replaceSourceRowIds ?? []) !== stable(replacedSources);
+          if (text === entry.text && (!text || entry.rowIdentityVersion === 1) && !aliasesChanged) continue;
           this.#turnStart(state, row.turnId);
-          if (text.startsWith(entry.text) && row.role === entry.role && row.turnId === entry.turnId) {
+          const provisional = row.role === 'user' && row.commandId && row.id !== `pending-user:${row.commandId}`
+            ? state.rows.find((/** @type {Value} */ item) => item.id === `pending-user:${row.commandId}`) : null;
+          const legacyPrefix = !!entry.text && entry.rowIdentityVersion !== 1;
+          if (text.startsWith(entry.text) && row.role === entry.role && row.turnId === entry.turnId && !provisional?.eventIds?.length && !legacyPrefix && !aliasesChanged) {
             const eventId = 'ni' + hash([this.bindingId, row.id, entry.text.length, text.length, this.#mac(text)]).slice(0, 28);
-            this.#event(state, eventId, row.role === 'user' ? 'user' : 'agent', row.turnId, { t: 'text', text: text.slice(entry.text.length), ...(row.role === 'reasoning' ? { thinking: true } : {}) });
+            this.#event(state, eventId, row.role === 'user' ? 'user' : 'agent', row.turnId, { t: 'text', text: text.slice(entry.text.length), ...(row.role === 'reasoning' ? { thinking: true } : {}) },
+              { nativeRow: { id: row.id, offset: entry.text.length, revision: entry.revision ?? 0 } });
             entry.eventIds.push(eventId);
           } else {
             state.projectionStatus = this.#options.supportsNativeProjection ? 'ready' : 'resync-required'; entry.revision = (entry.revision ?? 0) + 1;
             const eventId = 'ni' + hash([this.bindingId, row.id, 'replace', entry.revision, this.#mac(text)]).slice(0, 28);
-            this.#event(state, eventId, row.role === 'user' ? 'user' : 'agent', row.turnId, { t: 'native-row-upsert', sourceRowId: row.id, role: row.role, text, revision: entry.revision, replaceIds: [...entry.eventIds] });
+            const sourceWireIds = replacedSources.flatMap((/** @type {string} */ sourceId) => state.rows.find((/** @type {Value} */ item) => item.id === sourceId)?.eventIds ?? []);
+            entry.replacedWireIds = [...new Set([...(entry.replacedWireIds ?? []), ...entry.eventIds, ...(provisional?.eventIds ?? []), ...sourceWireIds])];
+            this.#event(state, eventId, row.role === 'user' ? 'user' : 'agent', row.turnId, { t: 'native-row-upsert', sourceRowId: row.id, role: row.role, text, revision: entry.revision,
+              replaceIds: entry.replacedWireIds, ...(replacedSources.length ? { replaceSourceRowIds: replacedSources } : {}) });
             entry.eventIds = [eventId];
           }
           entry.text = text; entry.digest = this.#mac(text); entry.role = row.role; entry.turnId = row.turnId;
+          entry.rowIdentityVersion = 1;
+          entry.replaceSourceRowIds = replacedSources;
         }
         for (const tool of row.tools ?? []) this.#tool(state, row, tool);
       }
@@ -353,16 +429,26 @@ export class NativeHappyConnector extends EventEmitter {
         if (status && turn?.started && !turn.ended && view.currentTurnId !== turnId) { this.#event(state, 'ni' + hash([this.bindingId, turnId, 'turn-end', status]).slice(0, 28), 'agent', turnId, { t: 'turn-end', status }); turn.ended = status; }
       }
       state.requestMap = this.#requestMap(view, epoch);
+      const recentStamp = `${epoch ?? 'unknown'}:${view.contentStamp ?? hash(view.rows ?? [])}`;
+      // 原 owner 的静默 stdout 快照可能沿用同一 revision；另存投影版本，不能让新鲜完整行被旧 seed 去重。
+      if (state.recentStamp !== recentStamp) { state.recentStamp = recentStamp; state.recentVersion = (state.recentVersion ?? 0) + 1; }
     });
     await this.#publishMetadata(view, epoch, lease); await this.#flushEvents();
     if (lease && epoch && available(view) && view.kind !== 'window' && this.#options.sourceIdentity.app === 'codex') this.emit('notification-observation', { ...notificationSummary(view, this.#state.requestMap), epoch });
   }
 
-  /** @param {Value} state @param {string} eventId @param {string} role @param {string|null} turn @param {Value} ev */
-  #event(state, eventId, role, turn, ev) {
+  /** Only the observer publication window is bounded; native commands/questions/history retain full evidence.
+   * @param {Value} view @returns {Value[]} */
+  #mirrorRows(view) {
+    const rows = view.rows ?? [];
+    return this.#options.recentRowLimit === undefined ? rows : rows.slice(-this.#options.recentRowLimit);
+  }
+
+  /** @param {Value} state @param {string} eventId @param {string} role @param {string|null} turn @param {Value} ev @param {Value} [meta] */
+  #event(state, eventId, role, turn, ev, meta = {}) {
     if (state.events.some((/** @type {Value} */ item) => item.id === eventId)) return;
     const time = Math.max(Date.now(), state.clock + 1); state.clock = time;
-    const record = { role: 'session', content: { id: eventId, time, role, ...(turn ? { turn } : {}), ev }, meta: { sentFrom: 'noninvasive-observer' } };
+    const record = { role: 'session', content: { id: eventId, time, role, ...(turn ? { turn } : {}), ev }, meta: { sentFrom: 'noninvasive-observer', ...meta } };
     state.events.push({ id: eventId, localId: `${eventId}-observed`, ciphertext: encryptRecord(record, this.#key), sent: false });
   }
   /** @param {Value} state @param {string} turnId */
@@ -512,6 +598,7 @@ export class NativeHappyConnector extends EventEmitter {
       try { result = await this.#options.adapter.command(this.nativeId, plan.action, structuredClone(plan.payload), plan.id, { expectedGeneration: plan.epoch }); }
       catch (error) {
         if (error instanceof BridgeError && SAFE_NATIVE_ERRORS.has(error.code)) throw error;
+        if (error instanceof BridgeError && /** @type {BridgeError & {effectMayHaveOccurred?:boolean}} */ (error).effectMayHaveOccurred === false) throw error;
         const unknown = new BridgeError('delivery-unknown', 'The native command may have occurred; it will not be replayed.');
         const cause = error instanceof BridgeError ? nativeCauseCode(/** @type {BridgeError & {nativeCause?:unknown}} */ (error).nativeCause) : undefined;
         if (cause) Object.assign(unknown, { nativeCause: cause });
@@ -556,9 +643,11 @@ export class NativeHappyConnector extends EventEmitter {
   /** @param {Value} state @param {Value} view */
   #reconcileCommands(state, view) {
     for (const command of state.commands) {
-      if (command.origin !== 'message' || !['send', 'steer'].includes(command.action) || !['dispatching', 'running', 'unknown', 'complete'].includes(command.state)) continue;
+      const questionReply = command.origin === 'rpc' && command.action === 'answer-question';
+      if (!(command.origin === 'message' && ['send', 'steer'].includes(command.action) || questionReply)
+        || !['dispatching', 'running', 'unknown', 'complete'].includes(command.state)) continue;
       const row = observedInputRow(view, command.id, command.result?.messageId);
-      if (!row || state.epoch !== command.epoch) continue;
+      if (!row || state.epoch !== command.epoch || questionReply && row.inputStatus !== 'accepted') continue;
       command.admission = { confirmed: true, turnId: row.turnId ?? null, messageId: row.id, queued: false }; command.resolvedByObservation = true; this.#receiptEvent(state, command);
     }
   }
@@ -578,9 +667,19 @@ export class NativeHappyConnector extends EventEmitter {
   /** @param {Value} state @param {string} serverId @param {string} reason */
   #rejectEvent(state, serverId, reason) { const eventId = 'hr' + hash([this.bindingId, serverId, 'rejected']).slice(0, 28); this.#event(state, eventId, 'agent', null, { t: 'user-message-rejected', ref: serverId, reason }); }
   /** @param {string} command */
-  #publicReceipt(command) { const value = this.#state.commands.find((/** @type {Value} */ item) => item.id === command); return value ? { id: value.id, commandId: value.id, status: value.admission?.confirmed ? 'complete' : value.state,
+  #publicReceipt(command) { const value = this.#state.commands.find((/** @type {Value} */ item) => item.id === command); return value ? { id: value.id, commandId: value.id, target: this.#receiptTarget(value), status: value.admission?.confirmed ? 'complete' : value.state,
     nativeReceiptStatus: value.resolvedBySettingsObservation ? this.#options.receipts.query(this.receiptScope, value.id)?.status ?? value.state : value.state,
     admission: value.admission ?? null, result: value.result ?? null, error: value.error ?? null, ...(nativeCauseCode(value.nativeCause) ? { nativeCause: nativeCauseCode(value.nativeCause) } : {}) } : null; }
+  /** Nonsecret logical target lets another question proceed without replaying this operation. @param {Value} command */
+  #receiptTarget(command) {
+    if (typeof command.rpcTarget === 'string') return command.rpcTarget;
+    if (command.action === 'answer-question' && typeof command.payload?.questionItemId === 'string') {
+      const key = 'cq' + hash([this.bindingId, command.payload.questionItemId]).slice(0, 28);
+      return rpcTarget('communication', { id: key });
+    }
+    if (command.action === 'interrupt') return rpcTarget('abort', { turnId: command.payload?.turnId });
+    return undefined;
+  }
   /** @param {string} command @returns {Value} */
   #mustReceipt(command) { const receipt = this.#publicReceipt(command); if (!receipt) throw new BridgeError('missing-command-plan', 'The saved native command plan is missing.'); return receipt; }
   /** @param {unknown} params */
@@ -678,7 +777,7 @@ export class NativeHappyConnector extends EventEmitter {
       if (method === 'permission') plan = this.#permissionPlan(mapping, params);
       else plan = this.#communicationPlan(mapping, params);
     }
-    const full = { ...plan, id: key, key: `rpc:${key}`, origin: 'rpc', rpcMethod: method, state: 'prepared', epoch, requestDigest, admission: null };
+    const full = { ...plan, id: key, key: `rpc:${key}`, origin: 'rpc', rpcMethod: method, rpcTarget: rpcTarget(method, params), state: 'prepared', epoch, requestDigest, admission: null };
     await this.#mutate(state => state.commands.push(full));
     const result = await this.#execute(full);
     if (method === 'codex-controls-update' && result.status === 'complete') {

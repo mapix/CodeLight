@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 const SOURCE_ROOTS = new Set(['src', 'scripts', 'spec', 'test', 'native', 'public', 'apps', 'packages', 'assets', 'licenses', 'patches', 'docs', 'website', 'deploy', '.github']);
 const ROOT_FILES = new Set(['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'README.md', 'README.zh-CN.md', 'CONTRIBUTING.md', 'SECURITY.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'AGENTS.md', 'tsconfig.json', 'eslint.config.mjs', '.nvmrc', '.npmrc', '.gitignore', '.gitleaks.toml']);
 const PRIVATE_DIRS = new Set(['private', 'evidence', 'data', 'research', 'deliverables', 'output', 'node_modules', 'Pods', 'Build', 'build', 'dist', '.git', '.runtime', '.venv', '.module-cache', '.build', '.expo', '.gradle', 'trash', 'xcuserdata', 'DerivedData', 'coverage']);
-const PRIVATE_FILES = new Set(['account.json', 'devices.json', 'relay-key.json', 'mac-box-key.json', 'apns.json', 'network-access.json', 'network-identity.json', 'credentials.json', 'command-receipts.json', '.xcode.env.local', '.DS_Store', '.cursorrules', '.windsurfrules']);
+const PRIVATE_FILES = new Set(['account.json', 'devices.json', 'relay-key.json', 'mac-box-key.json', 'apns.json', 'network-access.json', 'network-identity.json', 'connection-channels.json', 'credentials.json', 'command-receipts.json', '.xcode.env.local', '.DS_Store', '.cursorrules', '.windsurfrules']);
 const OBSOLETE = new Set(['scripts/package.mjs', 'spec/delivery.md', 'spec/native-mobile-app.md', 'spec/native-mobile-transport.md', 'apps/mobile/google-services.json']);
 
 /** The current source distribution uses explicit roots and independently excludes private state.

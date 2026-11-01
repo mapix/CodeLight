@@ -9,6 +9,17 @@ it('groups native parent identities independently from relay ids and sorts by or
     expect(rows.filter(row => row.kind === 'session').map(row => row.key)).toEqual(['relay-new', 'relay-child', 'relay-old']);
     expect(rows.find(row => row.key === 'relay-child')).toMatchObject({ child: true });
 });
+it('ranks recent families before older pins, breaks recency ties by pin, and keeps actual parent time', () => {
+    const data = [session('pinned-old', 'native-old', null, 'Old pin', 1), session('family-parent', 'native-parent', null, 'Old parent', 2),
+        session('recent-child', 'native-child', 'native-parent', 'Recent worker', 100), session('fresh', 'native-fresh', null, 'Fresh', 50),
+        session('fresh-pin', 'native-fresh-pin', null, 'Fresh pin', 50)];
+    data[0].metadata!.nativeSession!.isPinned = true; data[4].metadata!.nativeSession!.isPinned = true;
+    const group = buildCodeLightBrowserRows(data, '', new Set(), new Set())[0].key;
+    const rows = buildCodeLightBrowserRows(data, '', new Set([group]), new Set(['family-parent']));
+    expect(rows.filter(row => row.kind === 'session').map(row => row.key)).toEqual(['family-parent', 'recent-child', 'fresh-pin', 'fresh', 'pinned-old']);
+    expect(rows.find(row => row.key === 'family-parent')).toMatchObject({ at: 2 });
+    expect(data[2].metadata!.nativeSession!.parentId).toBe('native-parent'); expect(data[0].metadata!.nativeSession!.isPinned).toBe(true);
+});
 it('folds one project across main, worktrees and nested directories, including cross-worktree children', () => {
     const data = [session('main', 'native-main', null, 'Main', 1), session('tree', 'native-tree', null, 'Worktree', 2), session('child', 'native-child', 'native-main', 'Worker', 3)];
     data.forEach((s, i) => { s.metadata!.path = ['/repo/app', '/worktrees/a/app', '/repo/app/src'][i]; Object.assign(s.metadata!.nativeSession!, { projectKey: 'canonical-project', projectPath: '/repo/app', projectLabel: 'app' }); });

@@ -52,6 +52,25 @@ export const ru: TranslationStructure = {
         unconfirmed: "Обновление не подтверждено. Проверяем исходные настройки; не повторяйте изменение.",
     },
 
+    codeLightChannels: {
+        title: "Подключение",
+        automatic: "Автоматически",
+        automaticDetail: "Использовать доступное проверенное подключение.",
+        local: "Локальная сеть",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "Подключено",
+        available: "Доступно",
+        probing: "Проверка",
+        failed: "Недоступно",
+        switching: "Подключение…",
+        notConnected: "Нет подключения",
+        current: "Текущий маршрут",
+        latency: ({ ms }: { ms: number }) => "{ms} мс".replace("{ms}", String(ms)),
+        latencyUnknown: "Задержка неизвестна",
+        switchFailed: "Не удалось сменить подключение. Текущий маршрут сохранён.",
+    },
+
     codeLightLoading: {
         titles: "Загрузка названий сеансов Codex…",
         discovered: ({ count }: { count: number }) => "Найдено сеансов Codex: {count} · загрузка продолжается…".replace("{count}", String(count)),
@@ -620,6 +639,8 @@ export const ru: TranslationStructure = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "Результат ответа не подтверждён. Проверьте исходную операцию; повторной отправки не будет.",
+        checkResult: "Проверить результат",
         title: "Вопрос",
         submit: "Отправить ответ",
         chooseMultiple: "Выберите все подходящие",

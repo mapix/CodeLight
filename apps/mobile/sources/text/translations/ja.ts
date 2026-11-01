@@ -44,6 +44,25 @@ export const ja: TranslationStructure = {
         unconfirmed: "更新結果を確認できていません。元の設定を確認中です。変更を繰り返さないでください。",
     },
 
+    codeLightChannels: {
+        title: "接続経路",
+        automatic: "自動選択",
+        automaticDetail: "確認済みの利用可能な接続を使います。",
+        local: "ローカルネットワーク",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "接続済み",
+        available: "利用可能",
+        probing: "確認中",
+        failed: "利用不可",
+        switching: "接続中…",
+        notConnected: "未接続",
+        current: "現在の経路",
+        latency: ({ ms }: { ms: number }) => "{ms} ミリ秒".replace("{ms}", String(ms)),
+        latencyUnknown: "遅延は未確認",
+        switchFailed: "接続を切り替えられませんでした。現在の経路は維持されます。",
+    },
+
     codeLightLoading: {
         titles: "Codex セッションのタイトルを読み込んでいます…",
         discovered: ({ count }: { count: number }) => "Codex セッション {count} 件を検出 · 引き続き読み込み中…".replace("{count}", String(count)),
@@ -605,6 +624,8 @@ export const ja: TranslationStructure = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "回答結果を確認できていません。元の操作を確認してください。再送信はしません。",
+        checkResult: "結果を確認",
         title: "質問",
         submit: "回答を送信",
         chooseMultiple: "当てはまるものをすべて選択",

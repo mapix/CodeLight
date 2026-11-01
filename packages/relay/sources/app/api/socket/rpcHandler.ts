@@ -171,7 +171,7 @@ export function rpcHandler(userId: string, socket: Socket, io: Server) {
         try {
             if (!method || typeof method !== 'string') {
                 finish('invalid_params');
-                callback?.({ ok: false, error: 'Invalid parameters: method is required' });
+                callback?.({ ok: false, error: 'Invalid parameters: method is required', effectMayHaveOccurred: false });
                 return;
             }
 
@@ -187,7 +187,8 @@ export function rpcHandler(userId: string, socket: Socket, io: Server) {
 
             if (targets.length === 0) {
                 finish('not_available');
-                callback?.({ ok: false, error: 'RPC method not available' });
+                // 尚未选择/emit 到任何 worker，明确未派发；客户端不能把这种失败冻结成未知回复。
+                callback?.({ ok: false, error: 'RPC method not available', effectMayHaveOccurred: false });
                 return;
             }
             if (targets.length > 1) {
@@ -198,7 +199,7 @@ export function rpcHandler(userId: string, socket: Socket, io: Server) {
             const target = targets[0];
             if (target.id === socket.id) {
                 finish('self_call');
-                callback?.({ ok: false, error: 'Cannot call RPC on the same socket' });
+                callback?.({ ok: false, error: 'Cannot call RPC on the same socket', effectMayHaveOccurred: false });
                 return;
             }
 

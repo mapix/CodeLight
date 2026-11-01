@@ -18,6 +18,7 @@ import {
 } from './attachmentDiagnostics';
 import { getServerUrl, rewriteLoopbackHost } from './serverConfig';
 import { appendFormFile } from './uploadFormFile';
+import { credentialHeaders } from './peerNetwork';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -47,7 +48,7 @@ export async function requestAttachmentUpload(
         response = await fetch(requestUrl, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${credentials.token}`,
+                ...credentialHeaders(credentials,requestUrl,'POST',API_ENDPOINT),
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ filename, size }),
@@ -171,9 +172,7 @@ export async function uploadEncryptedBlob(
     const headers: Record<string, string> = {
         'Content-Type': 'application/octet-stream',
     };
-    if (isServerUrl) {
-        headers['Authorization'] = `Bearer ${credentials.token}`;
-    }
+    if (isServerUrl || credentials.peer) Object.assign(headers,credentialHeaders(credentials,upload.uploadUrl,'PUT',serverUrl));
 
     // Build a standalone ArrayBuffer of exactly encryptedData.length bytes.
     // RN's iOS Blob polyfill rejects Uint8Array/ArrayBuffer constructors
@@ -241,7 +240,7 @@ export async function downloadEncryptedAttachment(
         requestRes = await fetch(requestUrl, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${credentials.token}`,
+                ...credentialHeaders(credentials,requestUrl,'POST',API_ENDPOINT),
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ ref }),
@@ -282,9 +281,7 @@ export async function downloadEncryptedAttachment(
 
     const isServerUrl = isSameServerEndpoint(downloadUrl, API_ENDPOINT);
     const headers: Record<string, string> = {};
-    if (isServerUrl) {
-        headers['Authorization'] = `Bearer ${credentials.token}`;
-    }
+    if (isServerUrl || credentials.peer) Object.assign(headers,credentialHeaders(credentials,downloadUrl,'GET',API_ENDPOINT));
     let blobRes: Response;
     try {
         blobRes = await fetch(downloadUrl, { headers, redirect: 'error' });

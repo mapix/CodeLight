@@ -17,11 +17,24 @@ and the initial public Git history; checksum/test-vector exceptions must be
 specific and explained. Dependency findings require remediation or a documented
 reachability assessment, not a blanket claim that a scanner proves safety.
 
+Public source, deployment examples and the final software archive must not contain
+the publisher's saved private Relay server URL or hostname. Deployment examples
+use `relay.example.com`; the installed app reads each user's saved configuration
+outside its bundle. Compare the actual private configuration against selected
+source files, reachable public Git history and every expanded release member,
+including binaries. Keep matching values and audit captures private; public
+reports contain counts and paths only. This check supplements secret scanning,
+since a hostname may not match a credential detector.
+
 The public source archive selects existing tracked and nonignored files only
 inside the current standalone workspace's explicit source/configuration roots.
 Deleted tracked files are omitted without reviving them. Refuse symlinks rather
 than silently following external paths; exclude private state, network identity
 and access-key files, generated dependencies/builds and obsolete prototype specs.
+The v2 `connection-channels.json` file contains the saved Relay key and is
+excluded by Git ignore, source selection and archive verification, just like
+the legacy network access/identity files. A public source test must exercise
+this filename with a private sentinel, not assume all JSON is publishable.
 Use the same selection when creating the clean initial public Git snapshot.
 
 ## CI publication

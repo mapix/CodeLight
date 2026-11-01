@@ -8,6 +8,7 @@ import type { ProjectAvatar } from "./projectTypes";
 import type { SessionAvatarDescriptor } from "./sessionAvatarTypes";
 import { getHappyClientId } from "./apiSocket";
 import { getServerUrl, rewriteLoopbackHost } from "./serverConfig";
+import { credentialHeaders } from './peerNetwork';
 
 const previewSchema = z.object({
   thumbhash: z.string().min(4).max(128),
@@ -30,12 +31,13 @@ export async function loadSessionAvatar(
   const preview = previewSchema.safeParse(await session.decryptRaw(descriptor.preview));
   if (!preview.success || signal.aborted) return null;
   const serverUrl = getServerUrl();
+  const requestUrl = `${serverUrl}/v1/sessions/${encodeURIComponent(sessionId)}/avatar/request-download`;
   const headers = {
-    Authorization: `Bearer ${credentials.token}`,
+    ...credentialHeaders(credentials,requestUrl,'POST',serverUrl),
     "X-Happy-Client": getHappyClientId(),
   };
   const grant = await fetch(
-    `${serverUrl}/v1/sessions/${encodeURIComponent(sessionId)}/avatar/request-download`,
+    requestUrl,
     {
       method: "POST",
       headers,
@@ -50,7 +52,7 @@ export async function loadSessionAvatar(
   const url = new URL(rewriteLoopbackHost(download.data.downloadUrl));
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return null;
   const response = await fetch(url.toString(), {
-    headers: isSameServerEndpoint(url.toString(), serverUrl) ? headers : undefined,
+    headers: isSameServerEndpoint(url.toString(), serverUrl) || credentials.peer ? { ...credentialHeaders(credentials,url.toString(),'GET',serverUrl), 'X-Happy-Client':getHappyClientId() } : undefined,
     signal,
     redirect: "error",
   });

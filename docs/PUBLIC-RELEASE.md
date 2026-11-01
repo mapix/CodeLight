@@ -28,6 +28,28 @@ commit must reflect the final tested source; regenerate them after any fixes.
 Do not reuse a source archive from an earlier candidate just because its build
 or secret scan passed.
 
+For later updates, apply the reviewed source selection to the existing clean
+public checkout and retain its public history. Remove public files absent from
+the new selection, inspect the diff, then run source/privacy/history scans before
+committing. Never merge or push the original private development history.
+
+## Version 0.5 behavior
+
+Mac Local network, Cloudflare and configured Relay are independent checkbox
+entries, enabled by default on first migration. One pinned-key QR conveys all
+enabled candidates; the phone proves a reachable channel automatically and has
+a manual Connection sheet. LAN authorization stays sealed to the approved
+device, and public channels retain TLS validation. Same-peer route changes keep
+the account/session cache and recover uncertain operations by their original
+receipts, without mutation replay.
+
+Directory pages are ordered by original Codex update time. Entries older than
+72 hours default to basic title/project/time information. Opening a session
+waits for its existing observation, then loads a fresh recent window at the
+newest end. Older history is bounded and requested only on explicit upward
+scroll; current/native status is independent of message age. These code rules
+do not substitute for the physical-phone acceptance recorded per release.
+
 ## Build and sign
 
 Use the pinned workspace and a supported Node 24 LTS patch. For official runtime
@@ -63,6 +85,7 @@ of logs, shell history and source. A completed upload is not acceptance.
 
 ```sh
 ditto -c -k --keepParent /absolute/path/to/release/CodeLight.app candidate.zip
+unzip -tq candidate.zip
 xcrun notarytool submit candidate.zip --keychain-profile YOUR_PROFILE --output-format json
 xcrun notarytool info SUBMISSION_ID --keychain-profile YOUR_PROFILE \
   --output-format json > /private/path/notary-status.json
@@ -90,6 +113,10 @@ Create a fresh build context with `Dockerfile`, `nginx.conf` and
 `security-headers.conf` from `deploy/website`. Copy `website/` into `site/`, the
 verified `release.json` into `site/release.json`, and only the public ZIP/checksum
 into `site/downloads/`. Include the public source commit in release metadata.
+When replacing a deployed release, include its existing versioned public
+downloads/checksums in the new context as well; updating `release.json` must not
+break an older immutable download URL. Verify retained bytes against the earlier
+published digest. Personal phone IPAs and private notary records are excluded.
 Do not send the complete workspace, `.git`, `.runtime` or private evidence as a
 Docker build context. Pin the resolved nginx base-image digest for a release.
 

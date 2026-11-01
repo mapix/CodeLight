@@ -5,6 +5,9 @@ vi.hoisted(() => { vi.stubGlobal('__DEV__', false); });
 const mocks = vi.hoisted(() => ({
     state: { sessions: {}, sessionMessages: {}, currentViewingSessionId: null } as any,
     request: vi.fn(),
+    peerRequest: vi.fn(),
+    activate: vi.fn(async () => {}),
+    select: vi.fn(async () => {}),
     applyMessages: vi.fn(),
     applyMessagesLoaded: vi.fn(),
     applyOlderMessagesPagination: vi.fn(),
@@ -25,13 +28,15 @@ vi.mock('expo-crypto', () => ({ randomUUID: () => 'id' }));
 vi.mock('expo-notifications', () => ({}));
 vi.mock('react-native', () => ({ Platform: { OS: 'ios' }, AppState: { currentState: 'active', addEventListener: vi.fn() } }));
 vi.mock('@/utils/platform', () => ({ isRunningOnMac: () => false }));
-vi.mock('@/sync/apiSocket', () => ({ apiSocket: { request: mocks.request }, getCurrentAppState: () => 'active', getHappyClientId: () => 'test' }));
+vi.mock('@/sync/apiSocket', () => ({ apiSocket: { request: mocks.request, peerRequest: mocks.peerRequest }, getCurrentAppState: () => 'active', getHappyClientId: () => 'test' }));
 vi.mock('@/sync/webTabTitle', () => ({ notifyUnreadMessage: vi.fn() }));
 vi.mock('@/sync/encryption/encryption', () => ({ Encryption: class {} }));
 vi.mock('@/sync/encryption/artifactEncryption', () => ({ ArtifactEncryption: class {} }));
 vi.mock('@/sync/encryption/encryptionCache', () => ({ EncryptionCache: class {} }));
 vi.mock('@/sync/storage', () => ({ storage: { getState: () => ({
     ...mocks.state,
+    applyReady: vi.fn(),
+    applyMachines: vi.fn(),
     getActiveSessions: () => [],
     applySessions: (sessions: any[]) => {
         mocks.state.sessions = { ...mocks.state.sessions };
@@ -64,8 +69,9 @@ vi.mock('@/sync/typesRaw', () => ({ normalizeRawMessage: (_id: string, _localId:
 vi.mock('@/sync/codeLightBackgroundTask', () => ({ registerCodeLightBackgroundTask: vi.fn() }));
 vi.mock('@/sync/codeLightNotifications', () => ({ startCodeLightPresence: vi.fn() }));
 vi.mock('@/sync/codeLightBackgroundCache', () => ({ rememberCodeLightSession: vi.fn(), codeLightAccountScope: async () => 'fixture', loadCodeLightBackgroundCache: () => ({ sessions: [], messages: {} }), saveCodeLightBackgroundCache: vi.fn() }));
-vi.mock('@/sync/codeLightSessionSelection', () => ({ selectCodeLightSession: vi.fn(async () => {}) }));
-vi.mock('@/sync/codeLightSourceActivation', () => ({ activateCodeLightSource: vi.fn(async () => {}) }));
+vi.mock('@/sync/codeLightSessionSelection', () => ({ selectCodeLightSession: mocks.select }));
+vi.mock('@/sync/codeLightSourceActivation', () => ({ activateCodeLightSource: mocks.activate }));
+vi.mock('@/sync/codeLightPeerCatalogCache', () => ({ loadCodeLightPeerCatalog: vi.fn(async () => []), saveCodeLightPeerCatalog: vi.fn(async () => {}) }));
 vi.mock('@/config', () => ({ config: mocks.config }));
 vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
 vi.mock('@/track', () => ({ tracking: null }));
@@ -79,6 +85,7 @@ vi.mock('@/realtime/hooks/voiceHooks', () => ({ voiceHooks: {
 } }));
 
 import { sync } from './sync';
+import { codeLightLoadingProgress } from './codeLightLoadingProgress';
 
 let engine: any;
 let encryption: { decryptMessages: ReturnType<typeof vi.fn> };
@@ -100,6 +107,7 @@ async function waitForPreload() {
 beforeEach(() => {
     vi.resetAllMocks();
     mocks.config.noninvasiveLocal = false;
+    mocks.activate.mockResolvedValue(undefined); mocks.select.mockResolvedValue(undefined);
     vi.stubGlobal('__DEV__', false);
     mocks.state = {
         sessions: { a: { id: 'a', permissionMode: 'auto', metadata: {} }, b: { id: 'b', permissionMode: 'auto', metadata: {} } },
@@ -123,6 +131,14 @@ beforeEach(() => {
     engine = new (sync.constructor as new () => typeof sync)();
     encryption = { decryptMessages: vi.fn(async (messages: any[]) => messages) };
     engine.encryption = { getSessionEncryption: (id: string) => mocks.state.sessions[id] ? encryption : undefined };
+});
+
+it('a restored connection queues new visible-session progress before connected UI can reveal an old error', () => {
+    mocks.config.noninvasiveLocal = true; mocks.state.currentViewingSessionId = 'a';
+    const previous = codeLightLoadingProgress.beginSession('a'); codeLightLoadingProgress.endSession('a', previous, true);
+    engine.onCodeLightConnectionRestored(); codeLightLoadingProgress.endSession('a', previous, true);
+    expect(codeLightLoadingProgress.getSession('a')).toMatchObject({ phase: 'loading', queued: true });
+    expect(codeLightLoadingProgress.getDiscovery()).toMatchObject({ phase: 'loading', queued: true });
 });
 
 describe('background history budget', () => {
@@ -257,6 +273,96 @@ describe('background history budget', () => {
         expect(mocks.state.sessionMessages.a).toBeUndefined();
         await engine.prefetchOlderMessagesInBackground('a');
         expect(mocks.request).toHaveBeenCalledTimes(6);
+    });
+});
+
+describe('CodeLight recent-first entry and peer reads', () => {
+    function recent(id = 'a', cursor: string | null = 'earlier', text = 'full latest native content') {
+        return { version: 1, session: { id, nativeUpdatedAt: 500, metadata: { path: '/fixture', host: 'fixture' }, metadataVersion: 1, agentState: null, agentStateVersion: 0,
+            active: true, activeAt: 100, createdAt: 1, basicOnly: false, seq: 100, sessionKey: Buffer.alloc(32, 1).toString('base64') },
+            rows: [{ id: `${id}-source-row`, role: 'assistant', text, turnId: 'original-turn', at: 500, order: 0, projectionRevision: 1, streamRevision: 0, snapshotRevision: 2, ownerGeneration: 'owner', replaceIds: [] }],
+            nextCursor: cursor, hasMore: !!cursor, ownerGeneration: 'owner', revision: 1, currentTurnId: 'original-turn', status: 'active', seq: 100, observedAt: 1000 };
+    }
+    function peer() {
+        mocks.config.noninvasiveLocal = true;
+        engine.credentials = { token: 'fixture-token', secret: 'fixture-secret', peer: { id: 'verified-peer' } };
+        engine.encryption.initializeSessions = vi.fn(async () => {});
+        mocks.state.currentViewingSessionId = 'a';
+        mocks.peerRequest.mockResolvedValue({ ok: true, json: async () => recent() });
+    }
+    it('awaits legacy observation before requesting recent messages, with no speculative duplicate GET', async () => {
+        mocks.config.noninvasiveLocal = true;
+        let finish!: () => void;
+        mocks.activate.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+        engine.onSessionVisible('a'); engine.onSessionVisible('a');
+        expect(mocks.activate).toHaveBeenCalledTimes(1); expect(mocks.request).not.toHaveBeenCalled();
+        finish();
+        await vi.waitFor(() => expect(mocks.applyMessagesLoaded).toHaveBeenCalled());
+        expect(mocks.request).toHaveBeenCalledTimes(1);
+    });
+    it('tap plus focus uses one fresh peer window and never trusts hover preload or older cache', async () => {
+        peer();
+        engine.sessionLastSeq.set('a', 1); engine.preloadSession('a');
+        expect(mocks.request).not.toHaveBeenCalled();
+        engine.onSessionSelected('a'); engine.onSessionVisible('a');
+        await vi.waitFor(() => expect(mocks.applyMessagesLoaded).toHaveBeenCalled());
+        expect(mocks.select).toHaveBeenCalledTimes(1); expect(mocks.activate).not.toHaveBeenCalled();
+        expect(mocks.peerRequest).toHaveBeenCalledTimes(1); expect(mocks.peerRequest.mock.calls[0][0]).toContain('/recent');
+        expect(mocks.applyMessages.mock.calls.at(-1)?.[1][0].content.text).toBe('full latest native content');
+    });
+    it('a pending desktop navigation cannot block the combined authoritative peer recent read', async () => {
+        peer(); mocks.select.mockImplementation(() => new Promise<void>(() => {}));
+        engine.onSessionSelected('a'); engine.onSessionVisible('a');
+        await vi.waitFor(() => expect(mocks.applyMessagesLoaded).toHaveBeenCalled(), { timeout: 300 });
+        expect(mocks.peerRequest).toHaveBeenCalledTimes(1);
+        expect(mocks.applyMessages.mock.calls.at(-1)?.[1][0].content.text).toBe('full latest native content');
+    });
+    it('loads an earlier native window only after explicit history request and advances that cursor', async () => {
+        peer(); await engine.fetchMessages('a');
+        await engine.prefetchOlderMessagesInBackground('a'); expect(mocks.peerRequest).toHaveBeenCalledTimes(1);
+        mocks.peerRequest.mockResolvedValue({ ok: true, json: async () => recent('a', null, 'complete earlier native row') });
+        expect(await engine.loadOlderMessages('a')).toBe(true);
+        expect(mocks.peerRequest.mock.calls[1][0]).toContain('/history?cursor=earlier');
+        expect(engine.codeLightHistoryCursors.get('a')).toBeNull();
+        expect(await engine.loadOlderMessages('a')).toBe(false); expect(mocks.peerRequest).toHaveBeenCalledTimes(2);
+    });
+    it('a superseded selection cannot publish a late recent response', async () => {
+        peer(); let finish!: (value: unknown) => void;
+        mocks.peerRequest.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+        const loading = engine.fetchMessages('a'); await vi.waitFor(() => expect(mocks.peerRequest).toHaveBeenCalled());
+        mocks.state.currentViewingSessionId = 'b'; finish({ ok: true, json: async () => recent() }); await loading;
+        expect(mocks.applyMessages).not.toHaveBeenCalled(); expect(engine.codeLightHistoryCursors.has('a')).toBe(false);
+    });
+    it('catalog uses a larger follow-up page and does not initialize keys or histories for basic entries', async () => {
+        peer(); mocks.peerRequest.mockImplementation(async (path: string) => ({ ok: true, json: async () => ({ version: 1, sessions: [{ ...recent().session, id: path.includes('cursor=') ? 'old' : 'a', nativeUpdatedAt: path.includes('cursor=') ? 1 : 500, basicOnly: path.includes('cursor='), sessionKey: undefined }],
+            hasMore: !path.includes('cursor='), nextCursor: path.includes('cursor=') ? null : 'older-page' }) }));
+        await engine.fetchSessions();
+        expect(mocks.peerRequest.mock.calls.map(([path]) => path)).toEqual(['/api/peer/catalog?limit=200', '/api/peer/catalog?limit=1000&cursor=older-page']);
+        expect(engine.encryption.initializeSessions).not.toHaveBeenCalled(); expect(mocks.state.sessions.old.updatedAt).toBe(1);
+        expect(mocks.applyMessages).not.toHaveBeenCalled();
+    });
+    it('a known session opens with a fresh recent read while the directory request is still pending', async () => {
+        peer(); mocks.select.mockResolvedValue(undefined);
+        let finishCatalog!: (value: unknown) => void;
+        mocks.peerRequest.mockImplementation((path: string) => path.includes('/catalog')
+            ? new Promise(resolve => { finishCatalog = resolve; })
+            : Promise.resolve({ ok: true, json: async () => recent() }));
+        const catalog = engine.fetchSessions();
+        await vi.waitFor(() => expect(finishCatalog).toBeDefined());
+        engine.onSessionSelected('a'); await waitForPreload();
+        expect(mocks.applyMessagesLoaded).toHaveBeenCalledWith('a');
+        finishCatalog({ ok: true, json: async () => ({ version: 1, sessions: [], hasMore: false, nextCursor: null }) }); await catalog;
+    });
+    it('machine loading on a verified peer uses proof-aware request with no raw LAN bearer fetch', async () => {
+        peer();
+        mocks.state.machines = {};
+        engine.encryption.initializeMachines = vi.fn(async () => {}); engine.applyMachines = vi.fn();
+        mocks.request.mockResolvedValue({ ok: true, json: async () => [] });
+        const raw = vi.fn(); vi.stubGlobal('fetch', raw);
+        await engine.fetchMachines();
+        expect(raw).not.toHaveBeenCalled(); expect(mocks.request).toHaveBeenCalledTimes(1);
+        expect(mocks.request.mock.calls[0][0]).toBe('/v1/machines');
+        expect(mocks.request.mock.calls[0][1].headers.Authorization).toBeUndefined();
     });
 });
 

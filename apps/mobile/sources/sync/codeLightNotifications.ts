@@ -4,17 +4,27 @@ import { AppState, Platform } from 'react-native';
 import type { AuthCredentials } from '@/auth/tokenStorage';
 import { config } from '@/config';
 import { getServerUrl } from './serverConfig';
+import { apiSocket } from './apiSocket';
+import { abortBudget } from './abortBudget';
 
 async function postDevice(credentials: AuthCredentials, path: string, value: unknown) {
+    const deadline = abortBudget(undefined, 5000);
+    try {
+    if (credentials.peer) {
+        // 同一 Mac 的入口可改变，前台保活不能继续使用旧地址/Bearer，否则可见会话会被误回收。
+        if (apiSocket.peerIdentity() !== 'peer:' + credentials.peer.id) throw Error('Device peer changed');
+        const response = await apiSocket.request(path, { method: 'POST', signal: deadline.signal,
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+        if (!response.ok) throw Error(`Device request failed: ${response.status}`);
+        return response.json() as Promise<{ registered: boolean; available: boolean }>;
+    }
     const origin = credentials.serverUrl ?? getServerUrl();
     if (origin !== getServerUrl()) throw Error('Notification origin changed');
-    const abort = new AbortController(); const timeout = setTimeout(() => abort.abort(), 5000);
-    try {
-        const response = await fetch(origin + path, { method: 'POST', signal: abort.signal,
+        const response = await fetch(origin + path, { method: 'POST', signal: deadline.signal,
             headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
         if (!response.ok) throw Error(`Notification registration failed: ${response.status}`);
         return response.json() as Promise<{ registered: boolean; available: boolean }>;
-    } finally { clearTimeout(timeout); }
+    } finally { deadline.dispose(); }
 }
 export async function syncCodeLightPushToken(credentials: AuthCredentials, granted: boolean) {
     if (!granted) { await postDevice(credentials, '/codelight/notifications/device', { enabled: false }); return null; }
@@ -37,4 +47,5 @@ export function startCodeLightPresence(credentials: AuthCredentials, viewingSess
     const timer = setInterval(() => { if (AppState.currentState === 'active') send(); }, 15000);
     presenceStop = () => { closed = true; clearInterval(timer); appState.remove(); release(); };
     send();
+    return presenceStop;
 }

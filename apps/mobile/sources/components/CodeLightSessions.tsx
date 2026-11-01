@@ -4,8 +4,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useAllMachines, useAllSessions } from '@/sync/storage';
-import { useCodeLightPairing } from '@/auth/CodeLightPairingProvider';
+import { useAllMachines, useAllSessions, useSocketStatus } from '@/sync/storage';
+import { useIsFocused } from '@react-navigation/native';
 import { buildCodeLightBrowserRows, codeLightProjectKey, isCodeLightCodexSession, type CodeLightBrowserRow } from '@/utils/codeLightSessionBrowser';
 import { formatSessionListTimestamp } from '@/utils/sessionListTimestamp';
 import { t } from '@/text';
@@ -16,13 +16,18 @@ import { useCodeLightProjectActivities } from '@/hooks/useCodeLightProjectActivi
 import { codeLightProjectActivityStore, type CodeLightProjectDescriptor } from '@/sync/codeLightProjectActivity';
 import { CodeLightProjectStatus } from './CodeLightProjectStatus';
 import { CodeLightSessionStatus } from './CodeLightSessionStatus';
+import { CodeLightBottomNavigation } from './CodeLightBottomNavigation';
+import { Typography } from '@/constants/Typography';
 
 export const CodeLightSessions = React.memo(function CodeLightSessions() {
-    const catalog = useAllSessions(), machines = useAllMachines({ includeOffline: true }), pairing = useCodeLightPairing(), router = useRouter(), insets = useSafeAreaInsets();
+    const catalog = useAllSessions(), machines = useAllMachines({ includeOffline: true }), router = useRouter(), insets = useSafeAreaInsets(), focused = useIsFocused();
     const sessions = useMemo(() => catalog.filter(isCodeLightCodexSession), [catalog]);
     const { theme } = useUnistyles();
     const progress = useCodeLightDiscoveryProgress();
-    const loading = progress.phase === 'loading' || progress.phase === 'idle' && sessions.length === 0;
+    const socketStatus = useSocketStatus().status;
+    // 旧请求错误在连接恢复期间已经过期，目录缓存始终可点；只显示当前连接上的读取失败。
+    const failed = progress.phase === 'error' && socketStatus === 'connected';
+    const loading = !failed && (progress.phase === 'loading' || progress.phase === 'idle' || socketStatus !== 'connected');
     const [query, setQuery] = useState(''), [projects, setProjects] = useState(new Set<string>()), [parents, setParents] = useState(new Set<string>());
     const deferredQuery = useDeferredValue(query);
     const searching = deferredQuery.trim().length > 0;
@@ -30,6 +35,7 @@ export const CodeLightSessions = React.memo(function CodeLightSessions() {
     const [visibleProjects, setVisibleProjects] = useState<string[]>([]);
     const [visibleSessions, setVisibleSessions] = useState<Array<{ id: string; nativeId: string; projectId: string }>>([]);
     const descriptors = useMemo(() => {
+        if (!focused) return [];
         const byId = new Map<string, CodeLightProjectDescriptor>();
         const machineIndex = new Map(machines.map(machine => [machine.id, machine]));
         const visible = new Set(visibleProjects);
@@ -44,13 +50,14 @@ export const CodeLightSessions = React.memo(function CodeLightSessions() {
                 sessions: visibleSessions.filter(row => row.projectId === id).map(({ id, nativeId }) => ({ id, nativeId })) });
         }
         return [...byId.values()];
-    }, [machines, sessions, visibleProjects, visibleSessions]);
+    }, [focused, machines, sessions, visibleProjects, visibleSessions]);
     useCodeLightProjectActivities(descriptors);
     React.useEffect(() => {
+        if (!focused) return;
         const enabled = new Set(descriptors.map(project => project.id));
         codeLightProjectActivityStore.mark(visibleProjects.filter(id => !enabled.has(id)), 'unavailable');
         codeLightProjectActivityStore.markSessions(visibleSessions.filter(row => !enabled.has(row.projectId)).map(row => row.id), 'unavailable');
-    }, [descriptors, visibleProjects, visibleSessions]);
+    }, [focused, descriptors, visibleProjects, visibleSessions]);
     const viewability = useRef({ itemVisiblePercentThreshold: 1, minimumViewTime: 200 }).current;
     const viewableChanged = useCallback(({ viewableItems }: { viewableItems: Array<{ item: CodeLightBrowserRow }> }) => {
         const rows = viewableItems.flatMap(token => token.item.kind === 'session' && token.item.session.metadata?.bridge?.source.id
@@ -74,22 +81,21 @@ export const CodeLightSessions = React.memo(function CodeLightSessions() {
     </View>;
     return <View style={[styles.root, { paddingTop: insets.top }]}>
         <View style={styles.header}><Text style={styles.heading}>{t('tabs.sessions')}</Text>{!loading || sessions.length > 0 ? <Text style={styles.count}>{sessions.length}</Text> : null}
-            <Pressable style={styles.language} accessibilityRole="button" accessibilityLabel={t('settingsLanguage.title')} onPress={() => router.push('/settings/language')}><Ionicons name="language-outline" size={22} color={theme.colors.text} /></Pressable>
-            <Pressable style={styles.scan} accessibilityLabel={t('onboarding.scanButton')} onPress={() => { void pairing.scan(); }}><Ionicons name="qr-code-outline" size={24} color={theme.colors.text} /></Pressable>
         </View>
-        <View style={styles.search}><Ionicons name="search-outline" size={19} color={theme.colors.textSecondary} /><TextInput style={styles.input} value={query} onChangeText={setQuery} placeholder={t('tools.names.search')} placeholderTextColor={theme.colors.textSecondary} autoCapitalize="none" autoCorrect={false} clearButtonMode="while-editing" /></View>
-        {loading || progress.phase === 'error' ? <View testID="codelight-discovery-progress" accessibilityLiveRegion="polite" style={styles.progress}>
+        <View style={styles.search}><Ionicons name="search-outline" size={19} color={theme.colors.textSecondary} /><TextInput testID="codelight-session-search" style={styles.input} value={query} onChangeText={setQuery} placeholder={t('tools.names.search')} placeholderTextColor={theme.colors.textSecondary} autoCapitalize="none" autoCorrect={false} clearButtonMode="while-editing" /></View>
+        {loading || failed ? <View testID="codelight-discovery-progress" accessibilityLiveRegion="polite" style={styles.progress}>
             {loading ? <ActivityIndicator size="small" color={theme.colors.textSecondary} /> : null}
-            <Text style={[styles.count, { flex: 1 }]}>{progress.phase === 'error' ? t('codeLightLoading.failed') : progress.found > 0 ? t('codeLightLoading.discovered', { count: progress.found }) : t('codeLightLoading.titles')}</Text>
-            {progress.phase === 'error' ? <Pressable onPress={() => { void sync.refreshSessions().catch(() => {}); }}><Text style={{ color: theme.colors.text }}>{t('common.retry')}</Text></Pressable> : null}
+            <Text style={[styles.count, { flex: 1 }]}>{failed ? t('codeLightLoading.failed') : progress.found > 0 ? t('codeLightLoading.discovered', { count: progress.found }) : t('codeLightLoading.titles')}</Text>
+            {failed ? <Pressable onPress={() => { void sync.refreshSessions().catch(() => {}); }}><Text style={{ color: theme.colors.text }}>{t('common.retry')}</Text></Pressable> : null}
         </View> : null}
-        <FlatList data={rows} keyExtractor={row => row.key} renderItem={render} viewabilityConfig={viewability} onViewableItemsChanged={viewableChanged} keyboardShouldPersistTaps="handled" initialNumToRender={18} maxToRenderPerBatch={20} windowSize={7} contentContainerStyle={{ paddingBottom: insets.bottom + 16 }}
+        <FlatList data={rows} keyExtractor={row => row.key} renderItem={render} viewabilityConfig={viewability} onViewableItemsChanged={viewableChanged} keyboardShouldPersistTaps="handled" initialNumToRender={18} maxToRenderPerBatch={20} windowSize={7} contentContainerStyle={{ paddingBottom: 16 }}
             ListEmptyComponent={!loading && progress.phase === 'complete' ? <Text style={[styles.count, { padding: 20 }]}>{t('codeLightLoading.empty')}</Text> : null} />
+        <CodeLightBottomNavigation active="sessions" />
     </View>;
 });
 const styles = StyleSheet.create(theme => ({
     root: { flex: 1, backgroundColor: theme.colors.groupped.background }, header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, gap: 12 },
-    heading: { fontSize: 28, fontWeight: '700', color: theme.colors.text }, count: { fontSize: 13, color: theme.colors.textSecondary }, language: { marginLeft: 'auto', minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }, scan: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+    heading: { fontSize: 28, color: theme.colors.text, ...Typography.default('semiBold') }, count: { fontSize: 13, color: theme.colors.textSecondary },
     progress: { paddingHorizontal: 20, paddingBottom: 14, flexDirection: 'row', alignItems: 'center', gap: 10 },
     search: { marginHorizontal: 20, marginBottom: 14, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 12, backgroundColor: theme.colors.surface }, input: { flex: 1, height: 42, color: theme.colors.text },
     project: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: theme.colors.divider }, projectTitle: { fontSize: 17, fontWeight: '600', color: theme.colors.text }, path: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 4 },

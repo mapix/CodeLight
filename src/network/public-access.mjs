@@ -50,7 +50,7 @@ export class EntryProbes {
   }
 }
 
-class CloudflareAccess extends EventEmitter {
+export class CloudflareAccess extends EventEmitter {
   /** @param {{binary:string,upstream:string,state:string}} options */
   constructor(options) { super(); this.options = options; this.closed = false; this.child = /** @type {import('node:child_process').ChildProcess|null} */ (null); this.reject = /** @type {((error:Error)=>void)|null} */ (null); }
   async start() {

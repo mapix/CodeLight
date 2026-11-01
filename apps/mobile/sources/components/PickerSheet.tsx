@@ -272,6 +272,7 @@ export function PickerSheetSection(props: {
  * path…") is never drawn as a choice.
  */
 export function PickerSheetOption(props: {
+    testID?: string;
     label: string;
     description?: string | null;
     selected: boolean;
@@ -286,6 +287,7 @@ export function PickerSheetOption(props: {
     const label = props.description ? `${props.label}, ${props.description}` : props.label;
     return (
         <Pressable
+            testID={props.testID}
             disabled={props.disabled}
             onPress={props.onPress}
             android_ripple={{ color: rippleColor(theme.dark) }}

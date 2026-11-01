@@ -41,6 +41,25 @@ export const pt: TranslationStructure = {
         unconfirmed: "Atualização não confirmada. Verificando as configurações originais; não repita a alteração.",
     },
 
+    codeLightChannels: {
+        title: "Ligação",
+        automatic: "Automática",
+        automaticDetail: "Usar uma ligação disponível e verificada.",
+        local: "Rede local",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "Ligado",
+        available: "Disponível",
+        probing: "A verificar",
+        failed: "Indisponível",
+        switching: "A ligar…",
+        notConnected: "Sem ligação",
+        current: "Rota atual",
+        latency: ({ ms }: { ms: number }) => "{ms} ms".replace("{ms}", String(ms)),
+        latencyUnknown: "Latência desconhecida",
+        switchFailed: "Não foi possível mudar a ligação. A rota atual foi mantida.",
+    },
+
     codeLightLoading: {
         titles: "Carregando títulos de sessões do Codex…",
         discovered: ({ count }: { count: number }) => "Sessões do Codex encontradas: {count} · carregando mais…".replace("{count}", String(count)),
@@ -603,6 +622,8 @@ export const pt: TranslationStructure = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "O resultado não está confirmado. Verifique a operação original; não será reenviada.",
+        checkResult: "Verificar resultado",
         title: "Pergunta",
         submit: "Enviar resposta",
         chooseMultiple: "Escolha todas as que se aplicam",

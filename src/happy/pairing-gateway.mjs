@@ -1,5 +1,7 @@
 import { createServer, request as proxyRequest } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
+import { channelList, peerMaterial } from '@slopus/happy-wire/codelight';
+import { BridgeError } from '../errors.mjs';
 import nacl from 'tweetnacl';
 import { WebSocketServer } from 'ws';
 
@@ -37,8 +39,8 @@ export class PairingInvitations {
     this.pair = nacl.box.keyPair.fromSecretKey(options.key);
     /** @type {Map<string,Value>} */ this.invites = new Map();
   }
-  /** @param {string} origin */
-  issue(origin) {
+  /** @param {string} origin @param {Value[]} [channels] */
+  issue(origin, channels) {
     const parsed = new URL(origin);
     const prefix = parsed.pathname === '/' ? '' : parsed.pathname;
     if (!['https:', 'http:'].includes(parsed.protocol) || prefix && !/^\/r\/[a-f0-9]{24}$/u.test(prefix) || parsed.origin + prefix !== origin || parsed.username || parsed.password || parsed.search || parsed.hash) throw Error('invalid-pairing-origin');
@@ -47,9 +49,11 @@ export class PairingInvitations {
     if (this.invites.size >= 32) throw Error('pairing-invitation-capacity');
     const invite = randomBytes(32).toString('base64url'), expires = now + (this.options.ttlMs ?? 180000);
     const key = Buffer.from(this.pair.publicKey).toString('base64url');
-    this.invites.set(invite, { origin, issuedAt: now, expires, retainUntil: expires, deviceKey: null, reply: null });
+    const choices = channels ? channelList(channels) : null;
+    if (choices && !choices.some(choice => choice.url === origin)) throw Error('invalid-pairing-origin');
+    this.invites.set(invite, { origin, channels: choices, issuedAt: now, expires, retainUntil: expires, deviceKey: null, reply: null });
     const url = new URL('codelight://pair');
-    for (const [name, value] of Object.entries({ v: '1', origin, invite, key, expires: String(expires) })) url.searchParams.set(name, value);
+    for (const [name, value] of Object.entries({ v: choices ? '2' : '1', origin, invite, key, expires: String(expires), ...(choices ? { channels: Buffer.from(JSON.stringify(choices)).toString('base64url') } : {}) })) url.searchParams.set(name, value);
     return { url: url.toString(), expires, key };
   }
   /** @param {{invite:string,publicKey:string,deviceName?:string}} input */
@@ -70,11 +74,12 @@ export class PairingInvitations {
   /** @param {Value} grant @param {Uint8Array} publicKey @param {string} encodedKey @param {Value} credentials */
   reply(grant, publicKey, encodedKey, credentials) {
     const macKey = Buffer.from(this.pair.publicKey).toString('base64url');
-    const payload = Buffer.from(JSON.stringify({ version: 1, origin: grant.origin, macKey,
-      credentials: { ...credentials, serverUrl: grant.origin } }));
+    const peer = grant.channels ? { id: createHash('sha256').update(peerMaterial(macKey, credentials.secret)).digest('hex'), key: macKey, channels: grant.channels } : null;
+    const payload = Buffer.from(JSON.stringify({ version: peer ? 2 : 1, origin: grant.origin, macKey,
+      ...(peer ? { peer } : {}), credentials: { ...credentials, serverUrl: grant.origin } }));
     const nonce = randomBytes(24), cipher = nacl.box(payload, nonce, publicKey, this.pair.secretKey);
     grant.deviceKey = encodedKey;
-    grant.reply = { version: 1, macKey, nonce: nonce.toString('base64url'), ciphertext: Buffer.from(cipher).toString('base64url') };
+    grant.reply = { version: peer ? 2 : 1, macKey, nonce: nonce.toString('base64url'), ciphertext: Buffer.from(cipher).toString('base64url') };
     // 同一手机丢 ACK 后复用原密文；换设备密钥不能消费已经使用过的邀请。
     grant.retainUntil = this.now() + 15 * 60 * 1000;
     return grant.reply;
@@ -86,10 +91,10 @@ export class PairingInvitations {
     const plain = nacl.box.open(cipher, nonce, publicKey, this.pair.secretKey);
     if (!plain) throw Error('invalid-pairing-request');
     const request = JSON.parse(Buffer.from(plain).toString('utf8'));
-    if (!request || Object.keys(request).some(key => !['invite', 'origin', 'version', 'deviceName'].includes(key)) || request.version !== 1 ||
+    if (!request || Object.keys(request).some(key => !['invite', 'origin', 'version', 'deviceName'].includes(key)) || ![1, 2].includes(request.version) ||
         typeof request.invite !== 'string' || !CODE.test(request.invite) || typeof request.origin !== 'string') throw Error('invalid-pairing-request');
     const grant = this.invites.get(request.invite);
-    if (grant && grant.origin !== request.origin) throw Error('invalid-pairing-origin');
+    if (grant && !(grant.channels ? request.version === 2 && grant.channels.some((/** @type {Value} */ choice) => choice.url === request.origin) : request.version === 1 && grant.origin === request.origin)) throw Error('invalid-pairing-origin');
     return this.exchange({ invite: request.invite, publicKey: input.publicKey, deviceName: typeof request.deviceName === 'string' ? request.deviceName.slice(0, 80) : 'Phone' });
   }
   close() { this.invites.clear(); this.pair.secretKey.fill(0); }
@@ -111,12 +116,19 @@ async function readBody(req) {
 }
 
 /** Only this loopback API is proxied; invitations are exchanged, never enumerated through the public tunnel.
- * @param {{upstream:string,invitations:PairingInvitations,devices?:import('./device-registry.mjs').DeviceRegistry,notificationsAvailable?:boolean,metrics?:Pick<import('./gateway-metrics.mjs').GatewayMetrics,'trackSocket'|'request'>,pairingBudget?:{capacity?:number,refillPerSecond?:number,now?:()=>number},entryProbe?:(challenge:unknown)=>string|null}} options */
+ * @param {{upstream:string,invitations:PairingInvitations,devices?:import('./device-registry.mjs').DeviceRegistry,notificationsAvailable?:boolean,metrics?:Pick<import('./gateway-metrics.mjs').GatewayMetrics,'trackSocket'|'request'>,pairingBudget?:{capacity?:number,refillPerSecond?:number,now?:()=>number},entryProbe?:(challenge:unknown)=>string|null,proof?:import('../network/device-proof.mjs').DeviceProofVerifier,requireProof?:boolean,expectedOrigin?:()=>string|null,onVerified?:()=>void,peerApi?:(path:string,method:string,body:Value,device:string)=>Promise<Value>,peerId?:()=>string}} options */
 export function createPairingGateway(options) {
   const upstream = new URL(options.upstream);
   if (upstream.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(upstream.hostname)) throw Error('invalid-pairing-upstream');
   const admitPairing = pairingBudget(options.pairingBudget);
   const probes = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
+  /** @param {import('node:http').IncomingMessage} req */
+  const authorize = req => {
+    const proof = options.proof?.authorize(req.headers.authorization, req.method ?? 'GET', req.url ?? '/', options.expectedOrigin?.());
+    if (proof) { req.headers.authorization = 'Bearer ' + proof.token; options.onVerified?.(); return proof.id; }
+    if (options.requireProof) return null;
+    return options.devices?.authorize(req.headers.authorization?.replace(/^Bearer /u, '')) ?? null;
+  };
   const server = createServer({ headersTimeout: 10000, requestTimeout: 60000, keepAliveTimeout: 5000 }, async (req, res) => {
     try { options.metrics?.request(); } catch { /* 统计失败不能阻断配对或同步。 */ }
     if (req.url?.split('?')[0] === '/codelight/entry-probe') {
@@ -137,8 +149,27 @@ export function createPairingGateway(options) {
       return;
     }
     const localPath = req.url?.split('?')[0];
+    if (localPath?.startsWith('/api/peer/')) {
+      const device = authorize(req);
+      if (!device || !options.peerApi || !options.devices) { res.writeHead(401).end(); return; }
+      try {
+        let body = ''; for await (const chunk of req) { body += chunk.toString(); if (body.length > 4096) throw Error('request-too-large'); }
+        const payload = await options.peerApi(req.url ?? '', req.method ?? 'GET', body ? JSON.parse(body) : {}, device);
+        const encoded = Buffer.from(JSON.stringify({ peerId: options.peerId?.(), payload }));
+        if (encoded.length > 8 * 1024 * 1024) throw Error('peer-response-too-large');
+        const key = options.devices.publicKey(device); if (!key) throw Error('unknown-device');
+        const nonce = randomBytes(24), ciphertext = nacl.box(encoded, nonce, bytes(key), options.invitations.pair.secretKey);
+        res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify({ version: 2, nonce: nonce.toString('base64url'), ciphertext: Buffer.from(ciphertext).toString('base64url') }));
+      } catch (error) {
+        const status = error instanceof BridgeError ? error.status : 400;
+        const code = error instanceof BridgeError && /^[a-z][a-z0-9-]{0,80}$/u.test(error.code) ? error.code : 'peer-request-failed';
+        res.setHeader('Content-Type','application/json'); res.writeHead(status).end(JSON.stringify({error:code}));
+      }
+      return;
+    }
     if (localPath === '/codelight/notifications/device' || localPath === '/codelight/notifications/presence') {
-      const device = options.devices?.authorize(req.headers.authorization?.replace(/^Bearer /u, ''));
+      const device = authorize(req);
       if (!device) { res.writeHead(401).end(); return; }
       if (req.method !== 'POST') { res.writeHead(405).end(); return; }
       try {
@@ -153,7 +184,7 @@ export function createPairingGateway(options) {
     }
     if (req.url?.startsWith('/codelight/')) { res.writeHead(404).end(); return; }
     const path = req.url?.split('?')[0];
-    if (options.devices && (path?.startsWith('/v1/auth') || path !== '/health' && !options.devices.authorize(req.headers.authorization?.replace(/^Bearer /u, '')))) {
+    if (options.devices && (path?.startsWith('/v1/auth') || path !== '/health' && !authorize(req))) {
       res.writeHead(401).end(); return;
     }
     const proxy = proxyRequest({ hostname: upstream.hostname, port: upstream.port, path: req.url,
@@ -181,7 +212,7 @@ export function createPairingGateway(options) {
     // Happy 的实时通道是 /v1/updates；误用 socket.io 默认路径会让 HTTP 列表可读而控制链路一直报错。
     const path = req.url?.split('?')[0];
     if (path !== '/v1/updates' && path !== '/v1/updates/') { socket.destroy(); return; }
-    const device = options.devices?.authorize(req.headers.authorization?.replace(/^Bearer /u, ''));
+    const device = authorize(req);
     if (options.devices && !device) { socket.destroy(); return; }
     if (device) options.devices?.connected(device, /** @type {import('node:net').Socket} */ (socket));
     const proxy = proxyRequest({ hostname: upstream.hostname, port: upstream.port, path: req.url,

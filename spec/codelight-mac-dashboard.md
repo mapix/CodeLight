@@ -1,5 +1,17 @@
 # Mac connection dashboard
 
+## Start and pause
+
+The Mac dashboard always exposes Start and Pause controls. Its service controller
+owns the lifecycle: starting/running → pausing → paused, or failed. Pause closes
+CodeLight's owned gateway, observer and relay/database children through their
+existing graceful shutdown. Start stays disabled until that shutdown has exited;
+late output cannot restore a ready state while pausing. Paused is an intentional
+state, not a connection error. Starting again reuses saved pairing/configuration,
+accepted work and unknown operation identities. It never replays a native
+mutation or pauses/restarts the original Codex owner. The app's existing automatic
+start on launch is retained; pause applies to the current app lifetime.
+
 After a device has paired, the Mac App defaults to a statistics dashboard. The
 QR screen remains reachable through a visible switch; renewing an invitation
 does not replace the dashboard or regenerate QR artwork while it is hidden.

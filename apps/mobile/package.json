@@ -185,6 +185,7 @@
     "rn-encryption": "^2.5.0",
     "socket.io-client": "^4.8.1",
     "thumbhash": "^0.1.1",
+    "tweetnacl": "1.0.3",
     "twrnc": "^4.9.1",
     "uuid": "^11.1.0",
     "zod": "4.6.6",

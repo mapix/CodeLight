@@ -44,3 +44,4 @@ website/release.json
 website/downloads/
 **/network-access.json
 **/network-identity.json
+**/connection-channels.json

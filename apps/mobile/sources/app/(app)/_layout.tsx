@@ -8,6 +8,7 @@ import { isRunningOnMac } from '@/utils/platform';
 import { useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
 import { MobileGlassBackdrop } from '@/components/MobileGlass';
+import { config } from '@/config';
 
 export const unstable_settings = {
     initialRouteName: 'index',
@@ -77,7 +78,7 @@ export default function RootLayout() {
             <Stack.Screen
                 name="settings/index"
                 options={{
-                    headerShown: true,
+                    headerShown: !config.noninvasiveLocal,
                     header: createPlainHeader,
                     headerTitle: t('settings.title'),
                     headerBackTitle: t('common.home'),
@@ -157,6 +158,10 @@ export default function RootLayout() {
                     headerTitleAlign: 'center',
                     headerBackTitle: t('common.back'),
                 }}
+            />
+            <Stack.Screen
+                name="settings/language"
+                options={{ headerTitle: t('settingsLanguage.title'), headerBackTitle: t('settings.title'), header: createPlainHeader }}
             />
             <Stack.Screen
                 name="settings/account"

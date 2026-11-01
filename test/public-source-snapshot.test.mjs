@@ -13,14 +13,15 @@ test('public source keeps current standalone inputs and excludes credentials and
 test('a public source snapshot preserves task deletions and fails closed on external symlinks', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'codelight-public-source-')), root = join(directory, 'input'), stage = join(directory, 'stage');
   t.after(() => rm(directory, { recursive: true, force: true }));
-  for (const name of ['package.json', 'src/network/relay-server.mjs', 'src/network-access.json']) {
+    for (const name of ['package.json', 'src/network/relay-server.mjs', 'src/network-access.json', 'src/connection-channels.json']) {
     await mkdir(dirname(join(root, name)), { recursive: true });
-    await writeFile(join(root, name), name === 'src/network-access.json' ? 'private-sentinel' : 'public-fixture');
+    await writeFile(join(root, name), name.endsWith('-channels.json') || name === 'src/network-access.json' ? 'private-sentinel' : 'public-fixture');
   }
-  const files = await copyPublicSourceSnapshot(root, stage, ['package.json', 'src/network/relay-server.mjs', 'src/network-access.json', 'scripts/removed-runtime.mjs']);
+  const files = await copyPublicSourceSnapshot(root, stage, ['package.json', 'src/network/relay-server.mjs', 'src/network-access.json', 'src/connection-channels.json', 'scripts/removed-runtime.mjs']);
   assert.deepEqual(files, ['package.json', 'src/network/relay-server.mjs']);
   assert.equal(await readFile(join(stage, 'src/network/relay-server.mjs'), 'utf8'), 'public-fixture');
   await assert.rejects(readFile(join(stage, 'src/network-access.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(stage, 'src/connection-channels.json')), { code: 'ENOENT' });
   await writeFile(join(directory, 'secret'), 'private-sentinel');
   await symlink(join(directory, 'secret'), join(root, 'src/leak.mjs'));
   await assert.rejects(copyPublicSourceSnapshot(root, stage, ['src/leak.mjs']), /symlink refused/);

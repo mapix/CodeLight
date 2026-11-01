@@ -41,6 +41,25 @@ export const en = {
         unconfirmed: "Update unconfirmed. Checking the original settings; do not repeat the change.",
     },
 
+    codeLightChannels: {
+        title: "Connection",
+        automatic: "Automatic",
+        automaticDetail: "Use an available verified connection.",
+        local: "Local network",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "Connected",
+        available: "Available",
+        probing: "Checking",
+        failed: "Unavailable",
+        switching: "Connecting…",
+        notConnected: "Not connected",
+        current: "Current",
+        latency: ({ ms }: { ms: number }) => "{ms} ms".replace("{ms}", String(ms)),
+        latencyUnknown: "Latency unknown",
+        switchFailed: "Could not switch connections. Your current route is unchanged.",
+    },
+
     codeLightLoading: {
         titles: "Loading Codex session titles…",
         discovered: ({ count }: { count: number }) => `Found ${count} Codex ${count === 1 ? 'session' : 'sessions'} · loading more…`,
@@ -637,6 +656,8 @@ export const en = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "Your reply result is not confirmed. Check the original operation; it will not be sent again.",
+        checkResult: "Check result",
         title: 'Question',
         submit: 'Send answer',
         chooseMultiple: 'Choose as many as apply',

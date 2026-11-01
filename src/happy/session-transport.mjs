@@ -212,6 +212,15 @@ export class HappySessionTransport extends EventEmitter {
       registeredRpcMethods: [...this.#rpcHandlers.keys()], lastErrorCode: this.#lastErrorCode };
   }
 
+  /** Existing decrypted checkpoint fields, only for the authenticated Mac peer read surface. */
+  peerSnapshot() {
+    this.#requireReady();
+    const metadata = this.#state.fields.metadata, agentState = this.#state.fields.agentState;
+    return { metadata: metadata.value ? decryptRecord(metadata.value, this.#key, this.#variant) : null, metadataVersion: metadata.version,
+      agentState: agentState.value ? decryptRecord(agentState.value, this.#key, this.#variant) : null, agentStateVersion: agentState.version,
+      seq: this.#state.receiveCursor };
+  }
+
   /** @param {{connectSocket?:boolean}} [options] */
   start(options = {}) {
     if (this.#startFlight) return this.#startFlight;
@@ -565,6 +574,8 @@ export class HappySessionTransport extends EventEmitter {
         const updated = typeof value === 'function' ? await value(decoded ?? {}) : value;
         if (updated === undefined) throw new HappyTransportError('invalid-state-update', 'Return an explicit state object or null from the state updater.');
         if (field === 'metadata' && (updated === null || updated === undefined)) throw new HappyTransportError('invalid-metadata', 'Happy metadata cannot be empty.');
+        // 相同 plaintext 不应换 nonce、递增字段版本并重写整份 transport。
+        if (canonical(JSON.parse(jsonText(updated))) === canonical(decoded)) return decoded;
         const encrypted = updated == null ? null : encryptRecord(updated, this.#key, this.#variant);
         let answer;
         try { answer = await socket.timeout(this.requestTimeoutMs).emitWithAck(field === 'metadata' ? 'update-metadata' : 'update-state', { sid: this.sessionId, expectedVersion: current.version, ...(field === 'metadata' ? { metadata: encrypted } : { agentState: encrypted }) }); }

@@ -2,7 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Platform } from 'react-native';
 import { CameraView } from 'expo-camera';
 import * as SecureStore from 'expo-secure-store';
-import { getRandomBytes } from 'expo-crypto';
+import { getRandomBytes, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
+import { peerMaterial } from '@slopus/happy-wire/codelight';
 import { reloadAppAsync } from 'expo';
 import axios from 'axios';
 import { useAuth } from './AuthContext';
@@ -44,19 +45,20 @@ export function CodeLightPairingProvider({ children }: { children: React.ReactNo
             return value;
         },
         encrypt: (code, device) => {
-            const nonce = getRandomBytes(24), plain = new TextEncoder().encode(JSON.stringify({ version: 1, invite: code.invite, origin: code.origin, deviceName: device.name ?? 'Phone' }));
+            const nonce = getRandomBytes(24), plain = new TextEncoder().encode(JSON.stringify({ version: code.version ?? 1, invite: code.invite, origin: code.origin, deviceName: device.name ?? 'Phone' }));
             const ciphertext = sodium.crypto_box_easy(plain, nonce, decodeBase64(code.key, 'base64url'), decodeBase64(device.secretKey, 'base64url'));
             return { publicKey: device.publicKey, nonce: encodeBase64(nonce, 'base64url'), ciphertext: encodeBase64(ciphertext, 'base64url') };
         },
         exchange: async (origin, packet) => (await axios.post(origin + '/codelight/pairing/exchange', packet, { timeout: 15000 })).data,
         decrypt: (code, device, value) => {
             const reply = value as { version?: number; macKey?: string; nonce: string; ciphertext: string };
-            if (reply?.version !== 1 || reply.macKey !== code.key) throw new CodeLightPairingError('identity', 'Wrong Mac pairing key.');
+            if (reply?.version !== (code.version ?? 1) || reply.macKey !== code.key) throw new CodeLightPairingError('identity', 'Wrong Mac pairing key.');
             const plain = sodium.crypto_box_open_easy(decodeBase64(reply.ciphertext, 'base64url'), decodeBase64(reply.nonce, 'base64url'),
                 decodeBase64(code.key, 'base64url'), decodeBase64(device.secretKey, 'base64url'));
             return JSON.parse(new TextDecoder().decode(plain));
         },
         currentOrigin: getServerUrl, selectOrigin: setServerUrl,
+        validatePeer: async (id, key, secret) => id === await digestStringAsync(CryptoDigestAlgorithm.SHA256, peerMaterial(key, secret)),
         credentials: () => { const value = authRef.current.credentials; return value ? { ...value, serverUrl: value.serverUrl ?? getServerUrl() } : null; },
         saveCredentials: async credentials => { if (!await TokenStorage.setCredentials(credentials)) throw new CodeLightPairingError('storage', 'Could not save this Mac.'); },
         login: credentials => authRef.current.login(credentials.token, credentials.secret, credentials.serverUrl),

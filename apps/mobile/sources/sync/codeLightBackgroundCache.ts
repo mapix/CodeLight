@@ -8,7 +8,7 @@ const cacheStorage = new MMKV({ id: 'codelight-ciphertext-cache-v1' });
 const KEY = 'snapshot', SELECTED_KEY = 'selected';
 let memoText: string | undefined, memo: CodeLightBackgroundCache | null = null;
 export const codeLightAccountScope = (credentials: AuthCredentials) => digestStringAsync(CryptoDigestAlgorithm.SHA256,
-    JSON.stringify([credentials.serverUrl ?? getServerUrl(), credentials.token, credentials.secret]));
+    JSON.stringify([credentials.peer ? 'peer:' + credentials.peer.id : credentials.serverUrl ?? getServerUrl(), credentials.token, credentials.secret]));
 export function loadCodeLightBackgroundCache(scope: string): CodeLightBackgroundCache {
     try {
         const text = cacheStorage.getString(KEY) ?? 'null';

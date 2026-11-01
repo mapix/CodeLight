@@ -15,7 +15,7 @@ import { SUPPORTED_LANGUAGE_CODES, type SupportedLanguage } from './_all';
 const translations: Record<SupportedLanguage, TranslationStructure> = {
     en, ru, pl, es, it: italian, pt, ca, 'zh-Hans': zhHans, 'zh-Hant': zhHant, ja,
 };
-const visibleGroups = ['codeLightSetup', 'codeLightPairing', 'codeLightModels', 'codeLightLoading', 'codeLightSessionStatus', 'sourceBridge'] as const;
+const visibleGroups = ['codeLightSetup', 'codeLightPairing', 'codeLightModels', 'codeLightLoading', 'codeLightChannels', 'codeLightSessionStatus', 'sourceBridge'] as const;
 const scanKeys = ['linkTitle', 'openBody', 'scanButton', 'linking', 'pasteLink', 'pasteLinkTitle', 'pasteLinkMessage', 'pasteLinkConfirm'] as const;
 
 it.each(SUPPORTED_LANGUAGE_CODES)('%s provides all project counters and explicit current CodeLight flow translations', (language) => {

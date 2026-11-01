@@ -35,9 +35,10 @@ class NativeFixture {
   emit(id, frame) { for (const callback of [...this.listeners.get(id) ?? []]) callback(frame); }
   /** @param {string} id @param {Value} state @param {number} [revision] */
   snapshot(id, state, revision = 1) { this.ownerStates.set(id, { state, revision }); this.emit(id, { type: 'broadcast', method: 'thread-stream-state-changed', params: { change: { type: 'snapshot', revision, conversationState: state } } }); }
-  /** @param {string} id */
-  async refreshSnapshot(id) {
+  /** @param {string} id @param {()=>void} [onRequested] */
+  async refreshSnapshot(id, onRequested) {
     this.refreshes.push(id);
+    onRequested?.();
     const owner = this.ownerStates.get(id);
     if (owner) this.snapshot(id, owner.state, owner.revision);
   }
@@ -106,6 +107,22 @@ function ownerState() {
   };
 }
 
+test('a native steering caller carries its temporary and accepted row relationship', async t => {
+  const { native, backend } = fixture(t);
+  /** @type {Value[]} */ const views = [];
+  const subscribe = backend.subscribe('session-1', view => { views.push(view); }); await until(() => native.listeners.has('session-1'));
+  const steer = { id: 'temporary-steering-uuid', type: 'steeringUserMessage', clientUserMessageId: 'original-caller', status: 'pending', input: [{ type: 'text', text: 'Original input' }] };
+  native.snapshot('session-1', { turns: [{ turnId: 'original-turn', status: 'inProgress', items: [steer] }], threadRuntimeStatus: { type: 'active', activeFlags: [] } });
+  const release = await subscribe;
+  const initial = views.at(-1); assert.ok(initial);
+  assert.equal(initial.rows[0].id, 'pending-user:original-caller');
+  native.snapshot('session-1', { turns: [{ turnId: 'original-turn', status: 'inProgress', items: [{ ...steer, serverUserMessageId: 'accepted-user-row', status: 'accepted' }] }], threadRuntimeStatus: { type: 'active', activeFlags: [] } }, 2);
+  await until(() => views.at(-1)?.rows[0].id === 'accepted-user-row');
+  const latest = views.at(-1); assert.ok(latest);
+  assert.deepEqual(latest.rows[0].replaceSourceRowIds, ['temporary-steering-uuid', 'pending-user:original-caller']);
+  assert.equal(latest.rows.length, 1); release();
+});
+
 test('a discovery owner change cannot reuse the prior owner cached snapshot as a fresh view', async (t) => {
   const { native, backend } = fixture(t);
   native.ownerGeneration = 'local:owner-one';
@@ -137,6 +154,23 @@ test('first snapshot waits for native state and releases its temporary subscript
   assert.equal(view.currentTurnId, 'turn-2');
   assert.equal(native.releases, 1);
   assert.equal(backend.sessions.size, 0);
+});
+
+test('native item times and timestamp maps replace a long turn origin without inventing observation time', async t => {
+  const { native, backend } = fixture(t); const state = ownerState();
+  const tail = state.turnHistory.history.entitiesByKey.tail;
+  tail.items[0].startedAtMs = 10000; tail.items[1].startedAtMs = 12000;
+  tail.items.push({ id: 'command-timed', type: 'commandExecution', command: 'fixture', status: 'completed', aggregatedOutput: 'result' });
+  tail.commandExecutionStartedAtMsById = { 'command-timed': 14000 };
+  tail.items.push({ id: 'assistant-mapped', type: 'agentMessage', text: 'mapped time' });
+  let latest;
+  const subscription = backend.subscribe('timed-source', view => { latest = view; });
+  await until(() => native.subscriptions === 1); native.snapshot('timed-source', state, 1); const release = await subscription;
+  assert.deepEqual(/** @type {any} */ (latest).rows.filter((/** @type {Value} */ row) => row.turnId === 'turn-2').map((/** @type {Value} */ row) => row.at), [10000, 12000, 14000, 200]);
+  native.patch('timed-source', [{ op: 'add', path: ['turnHistory', 'history', 'entitiesByKey', 'tail', 'agentMessageCompletedAtMsById'], value: { 'assistant-mapped': 16000 } }], 1, 2);
+  assert.equal(/** @type {any} */ (latest).rows.find((/** @type {Value} */ row) => row.id === 'assistant-mapped').at, 16000);
+  assert.deepEqual(/** @type {any} */ (latest).rows.filter((/** @type {Value} */ row) => row.turnId === 'turn-2').map((/** @type {Value} */ row) => row.order), [1, 2, 3, 4]);
+  assert.equal(native.actions.length, 0); release();
 });
 
 test('two consumers share one native subscription and get independent allowlisted views', async (t) => {

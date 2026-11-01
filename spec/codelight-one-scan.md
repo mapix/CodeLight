@@ -1,5 +1,12 @@
 # CodeLight one-scan connection — 2026-10-31
 
+> This document preserves the v1 one-scan baseline. The accepted 0.5 multi-channel
+> rules in [the connection contract](codelight-network-relay.md) supersede its
+> earlier single-tunnel/reconnection deferral. A new phone receives one pinned-key
+> QR for all enabled channels, chooses an available verified route automatically
+> and retains a manual Connection sheet. Legacy public v1 compatibility remains
+> separate; it does not permit plain bearer authorization on LAN.
+
 ## Product rules
 
 The user wants to open a local CodeLight Mac App and scan its QR code from the native phone app. The phone must not ask for registration, account creation, server selection, setup checkboxes, VPN installation, or VPN permissions. Camera permission is the operating system's normal first-use permission.

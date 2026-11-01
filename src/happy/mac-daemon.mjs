@@ -12,7 +12,7 @@ import { isCodeLightCodexSource } from './source-scope.mjs';
 import { NativeProjectActivityService } from './project-activity.mjs';
 
 /** @typedef {Record<string,any>} Value */
-/** @typedef {{directory:string,leaseDirectory?:string,account:Value,discovery:{discover:()=>Promise<{sources:Value[],errors?:string[]}>,adapter:(source:Value)=>Value,close?:()=>Promise<void>|void},registry?:Value,machineConnection?:(options:Value)=>Value,sourceFactory?:(options:Value)=>Promise<Value>,activityFactory?:(options:Value)=>Value,onRpc?:(method:string)=>void,viewedSessions?:()=>Set<string>,scanMs?:number,only?:(source:Value)=>boolean,maxActiveSources?:number}} Options */
+/** @typedef {{directory:string,leaseDirectory?:string,account:Value,discovery:{discover:()=>Promise<{sources:Value[],errors?:string[]}>,adapter:(source:Value)=>Value,close?:()=>Promise<void>|void},registry?:Value,machineConnection?:(options:Value)=>Value,sourceFactory?:(options:Value)=>Promise<Value>,activityFactory?:(options:Value)=>Value,onRpc?:(method:string)=>void,viewedSessions?:()=>Set<string>,scanMs?:number,only?:(source:Value)=>boolean,maxActiveSources?:number,observeBackground?:boolean}} Options */
 const lockfile = createRequire(import.meta.url)('proper-lockfile');
 
 /** One process owns a profile; sources activate lazily and keep their original runtime owner. */
@@ -58,6 +58,15 @@ export class CodeLightMacDaemon extends EventEmitter {
       });
       const saved = await readOptionalPrivateJson(join(this.directory, 'active-sources.json'));
       this.restored = new Set(Array.isArray(saved?.keys) ? saved.keys.filter((/** @type {unknown} */ key) => typeof key === 'string' && /^[a-f0-9]{64}$/u.test(key)) : []);
+      if (this.options.observeBackground === false) {
+        const required = new Set();
+        for (const key of this.restored) {
+          const transport = await readOptionalPrivateJson(join(this.directory, 'active', key, 'transport.json'));
+          // 原 inbox 只在 native execute 后 ACK；保留未处理输入/待发镜像，不能为省观察成本丢已接受工作。
+          if (transport?.inbox?.length || transport?.outbox?.length) required.add(key);
+        }
+        this.restored = required;
+      }
       const machine = /** @type {Value} */ (this.machine);
       this.connection = (this.options.machineConnection ?? (options => new CodeLightMachineConnection(/** @type {any} */ (options))))({ serverUrl: this.options.account.serverUrl, token: this.options.account.token,
         machineId: machine.id, accountSecret: new Uint8Array(Buffer.from(this.options.account.secret, 'base64url')), metadata: machine.metadata, metadataVersion: machine.record?.metadataVersion ?? 0, onRpc: this.options.onRpc });
@@ -129,7 +138,18 @@ export class CodeLightMacDaemon extends EventEmitter {
       const source = { ...binding.source, kind: binding.metadata?.bridge?.controlMode === 'window' ? 'window' : 'session' };
       this.sources.set(key, { source, binding }); this.activate(key, null).catch(() => this.emit('diagnostic', { code: 'source-observation-pending', sourceKey: key }));
     }
+    if (this.options.observeBackground === false) await this.retireUnviewed();
     return this.status();
+  }
+  async retireUnviewed() {
+    const viewed = this.options.viewedSessions?.() ?? new Set();
+    for (const [key, actor] of this.actors) {
+      if (viewed.has(this.sources.get(key)?.binding.happySessionId) || this.sourceUses.has(key) || this.activating.has(key)
+        || this.preparing.has(key) || this.starts.has(key) || Date.now() - (this.lastUsed.get(key) ?? Date.now()) < 30000
+        || typeof actor.tryCloseIfIdle !== 'function' || !await actor.tryCloseIfIdle()) continue;
+      this.actors.delete(key); this.lastUsed.delete(key); this.restored.delete(key);
+      await this.saveRestored();
+    }
   }
   /** @param {unknown} params */
   async openSource(params) {

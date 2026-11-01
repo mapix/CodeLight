@@ -122,5 +122,6 @@ export function messageSortKey(message: Message): number {
     if (message.kind === 'user-text' && message.sortAt !== undefined) {
         return message.sortAt;
     }
-    return message.createdAt;
+    // 原生快照按原行序稳定展示同时间内容；显示时间仍是未经改写的 createdAt。
+    return message.createdAt + (message.meta?.nativeOrder ?? 0) / 1000;
 }

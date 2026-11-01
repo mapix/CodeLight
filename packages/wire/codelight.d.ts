@@ -1,0 +1,10 @@
+export type ChannelKind = 'local' | 'cloudflare' | 'relay';
+export type PeerChannel = { id: string; kind: ChannelKind; url: string; label?: string };
+export type PeerCredentials = { id: string; key: string; channels: PeerChannel[]; device: { publicKey: string; secretKey: string }; automatic?: boolean; selectedChannel?: string };
+export const CHANNEL_KINDS: readonly ChannelKind[];
+export function isPrivateHost(host: string): boolean;
+export function channelOrigin(value: string, kind: ChannelKind): string;
+export function channelList(value: unknown): PeerChannel[];
+export function channelPath(origin: string, requestUrl: string): string;
+export function peerMaterial(macKey: string, secret: string): string;
+export function rpcTarget(method: string, params?: Record<string, unknown>): string;

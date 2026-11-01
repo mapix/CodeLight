@@ -27,7 +27,7 @@ try {
     for (const entry of await readdir(folder, { withFileTypes: true })) {
       const name = prefix + entry.name;
       if (/(^|\/)(node_modules|Pods|\.runtime|deliverables|xcuserdata|\.module-cache)(\/|$)/u.test(name)
-        || /evidence\/private/u.test(name) || /(^|\/)(account|devices|relay-key|mac-box-key)\.json$/u.test(name)
+        || /evidence\/private/u.test(name) || /(^|\/)(account|devices|relay-key|mac-box-key|network-access|network-identity|connection-channels)\.json$/u.test(name)
         || /\.(p8|p12|pem|mobileprovision|ipa|sqlite|db|log|tsbuildinfo)$/u.test(name) || /(^|\/)\.env(\.|$)/u.test(name) && !name.endsWith('.env.example')) throw Error(`Private/generated path in source export: ${name}`);
       if (entry.isSymbolicLink()) throw Error(`Source export must not depend on external symlinks: ${name}`);
       if (entry.isDirectory()) await inspect(join(folder, entry.name), name + '/'); else files++;

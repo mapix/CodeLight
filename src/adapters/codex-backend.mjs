@@ -11,9 +11,10 @@ import { writePrivateJson } from '../private-json.mjs';
 import { validateNativeResponse, validateFormResponse, validateQuestionResponse, validatePermissionSubset, supportsForm, prepareNativeSchemas, supportsNativePermissions } from './codex-response-schema.mjs';
 
 /** @typedef {Record<string, any>} Value */
-/** @typedef {{id:string,role:string,text:string,tools:Value[],turnId:string|null,status:string|null,at:number|null,asyncQuestions?:Value[],commandId?:string}} Row */
-/** @typedef {{rows:Row[],currentTurnId:string|null,latestTurnId?:string|null,status:string,requests:Value[],revision:number|null,contentStamp?:string,ownerGeneration?:string,nativeControlsCurrent?:Value}} View */
+/** @typedef {{id:string,role:string,text:string,tools:Value[],turnId:string|null,status:string|null,at:number|null,order?:number,asyncQuestions?:Value[],commandId?:string,replaceSourceRowIds?:string[]}} Row */
+/** @typedef {{rows:Row[],currentTurnId:string|null,latestTurnId?:string|null,status:string,requests:Value[],revision:number|null,contentStamp?:string,ownerGeneration?:string,historyComplete?:boolean,nativeControlsCurrent?:Value}} View */
 /** @typedef {{resolve:(view:View)=>void,reject:(error:Error)=>void,timer:ReturnType<typeof setTimeout>}} Waiter */
+/** @typedef {Waiter & {owner:string|null,armed:boolean}} FreshWaiter */
 /** @typedef {{sourceId:string,row:Row}} Candidate */
 /** @typedef {{source:Value,index:number,context:string,candidates:Candidate[],items:Map<Value,{index:number,candidate:Candidate|null}>,dependencies:unknown[],silent:boolean}} TurnProjection */
 /** @typedef {{projectedTurns:number,projectedItems:number,serializedRowBytes:number}} ProjectionWork */
@@ -36,6 +37,8 @@ export class CodexBackend {
     this.nativeErrorFile = options.nativeErrorFile ?? process.env.BRIDGE_CODEX_ERROR_FILE;
     /** @type {Value[]} */ this.nativeErrors = [];
     /** @type {Map<string,Session>} */ this.sessions = new Map();
+    /** @type {Map<string,Promise<View>>} */ this.freshSnapshots = new Map();
+    /** @type {Map<string,Set<FreshWaiter>>} */ this.freshWaiters = new Map();
     this.disposed = false;
   }
 
@@ -80,7 +83,7 @@ export class CodexBackend {
     session.releaseNative = null;
     session.state = null; session.view = null; session.projection = null; session.revision = null;
     for (const waiter of session.waiters) { clearTimeout(waiter.timer); waiter.reject(new BridgeError('codex-unavailable', 'Codex subscription was released.', 503)); }
-    session.waiters.clear(); session.callbacks.clear();
+    session.waiters.clear(); session.callbacks.clear(); this.rejectFresh(session.id, 'codex-unavailable');
     if (this.sessions.get(session.id) === session) this.sessions.delete(session.id);
   }
 
@@ -120,6 +123,42 @@ export class CodexBackend {
     const session = this.acquire(id);
     try { await this.ensure(session); return await this.waitForView(session); }
     finally { this.release(session); }
+  }
+
+  /** A cached view cannot satisfy an explicit fresh-tail request.
+   * @param {string} id @returns {Promise<View>} */
+  freshSnapshot(id) {
+    const existing = this.freshSnapshots.get(id); if (existing) return existing;
+    const session = this.acquire(id);
+    const operation = (async () => {
+      await this.ensure(session); await this.waitForView(session);
+      return await new Promise((resolve, reject) => {
+        if (!this.freshWaiters.has(id)) this.freshWaiters.set(id, new Set());
+        const waiters = /** @type {Set<FreshWaiter>} */ (this.freshWaiters.get(id));
+        const cleanup = () => { clearTimeout(waiter.timer); waiters.delete(waiter); if (!waiters.size) this.freshWaiters.delete(id); };
+        const waiter = /** @type {FreshWaiter} */ ({ owner: session.ownerGeneration, armed: false,
+          resolve: view => { cleanup(); resolve(structuredClone(view)); }, reject: error => { cleanup(); reject(error); },
+          timer: setTimeout(() => { cleanup(); reject(new BridgeError('codex-snapshot-timeout', 'No fresh owner snapshot arrived.', 504)); }, this.waitTimeoutMs) });
+        waiters.add(waiter);
+        // 真正发出只读请求后才接收快照；旧缓存和此前的在途帧不能满足显式刷新。
+        this.ipc.refreshSnapshot(id, () => { waiter.armed = true; }).catch(error => waiter.reject(error));
+      });
+    })().finally(() => { if (this.freshSnapshots.get(id) === operation) this.freshSnapshots.delete(id); this.release(session); });
+    this.freshSnapshots.set(id, operation); return operation;
+  }
+  /** @param {string} id @param {string} code */
+  rejectFresh(id, code) {
+    for (const waiter of [...this.freshWaiters.get(id) ?? []]) waiter.reject(new BridgeError(code, 'The original snapshot owner became unavailable.', 409));
+  }
+  /** Invoked only for an explicit older-history cursor.
+   * @param {string} id @returns {Promise<View>} */
+  async completeSnapshot(id) {
+    const session = this.acquire(id);
+    try {
+      await this.ensure(session); await this.waitForView(session);
+      await this.ipc.loadCompleteHistory(id, session.ownerGeneration);
+      return await this.freshSnapshot(id);
+    } finally { this.release(session); }
   }
 
   /** @param {string} id @param {(view:View)=>void} onView @returns {Promise<()=>void>} */
@@ -178,6 +217,11 @@ export class CodexBackend {
       session.view.contentStamp = createHash('sha256').update('codelight-view-v1\0').update(session.projection.rowsDigest).update(JSON.stringify(metadata)).digest('hex');
       this.scheduleRefresh(session);
       this.publish(session);
+      if (change.type === 'snapshot') for (const waiter of [...this.freshWaiters.get(session.id) ?? []]) {
+        if (!waiter.armed) continue;
+        if (waiter.owner !== session.ownerGeneration) waiter.reject(new BridgeError('source-epoch-changed', 'The snapshot owner changed during refresh.', 409));
+        else waiter.resolve(session.view);
+      }
       for (const waiter of session.waiters) { clearTimeout(waiter.timer); waiter.resolve(structuredClone(session.view)); }
       session.waiters.clear();
     } catch {
@@ -188,6 +232,7 @@ export class CodexBackend {
 
   /** @param {Session} session @param {string} status */
   invalidate(session, status) {
+    this.rejectFresh(session.id, 'codex-unavailable');
     this.cancelRefresh(session, true);
     session.ownerGeneration = null;
     session.state = null; session.projection = null; session.revision = null; session.view = emptyView(status);
@@ -307,11 +352,14 @@ export class CodexBackend {
       } else if (action === 'answer-question') {
         exactKeys(payload, ['questionItemId', 'answer']);
         if (typeof payload.questionItemId !== 'string' || typeof payload.answer !== 'string' || !payload.answer.trim()) throw new BridgeError('invalid-answer', 'A native question identity and nonempty answer are required.');
-        const view = await this.snapshot(id);
+        const view = await this.freshSnapshot(id);
         const question = pendingNativeAsyncQuestions(view).find((question) => question.questionItemId === payload.questionItemId);
         if (!question) throw new BridgeError('stale-question', 'This native asynchronous question is unknown or already answered.', 409);
         const text = `<send_user_message_question_reply>\n${JSON.stringify([{ questionItemId: question.questionItemId, question: question.title, answer: payload.answer }])}\n</send_user_message_question_reply>`;
-        response = await this.ipc.send(id, text, commandId, context?.expectedGeneration);
+        // active 的原 turn 必须走 steer；start-turn 会被正在运行的 owner 拒绝。
+        response = view.currentTurnId
+          ? await this.ipc.steer(id, text, commandId, context?.expectedGeneration)
+          : await this.ipc.send(id, text, commandId, context?.expectedGeneration);
       } else if (action === 'interrupt') {
         exactKeys(payload, ['turnId']);
         if (typeof payload.turnId !== 'string' || !payload.turnId.trim()) throw new BridgeError('invalid-turn', 'An explicit current turn identity is required.');
@@ -503,7 +551,8 @@ function projectHistory(state, previous) {
     if (entry.silent) silentTurn = entry.source;
     for (const candidate of entry.candidates) {
       if (seen.has(candidate.sourceId) || seen.has(candidate.row.id)) continue;
-      seen.add(candidate.row.id); rows.push(candidate.row);
+      seen.add(candidate.row.id);
+      rows.push(candidate.row);
     }
   }
   const rowDigests = previous?.rowDigests ?? new WeakMap();
@@ -566,18 +615,28 @@ function projectTurn(turn, turnIndex, questions, answers, previous, dependencies
     }
     const input = textContent(Array.isArray(turn.params?.input) ? turn.params.input.filter(isRecord) : []);
     const clientMessageId = string(turn.params?.clientUserMessageId);
+    const steeringAliases = new Map();
+    for (const item of items) if (item?.type === 'steeringUserMessage' && typeof item.clientUserMessageId === 'string') {
+      const aliases = steeringAliases.get(item.clientUserMessageId) ?? new Set();
+      if (typeof item.id === 'string') aliases.add(item.id);
+      aliases.add(`pending-user:${item.clientUserMessageId}`); steeringAliases.set(item.clientUserMessageId, aliases);
+    }
+    /** @param {string|null|undefined} client @param {string} rowId @returns {string[]} */
+    const replacementIds = (client, rowId) => [...new Set([...(steeringAliases.get(client) ?? []), ...(client && client === clientMessageId ? [`pending-user:${client}`] : [])])].filter(alias => alias !== rowId);
     const openingUserItem = items.some((/** @type {Value} */ item) => item?.type === 'userMessage' &&
       (clientMessageId && item.clientId ? item.clientId === clientMessageId : textContent(item.content) === input));
     // 原 owner 在 userMessage 通知之前已公布 params.input；只补这个可见输入，通知到达即替换临时行。
     if (input && !openingUserItem) {
       const id = `pending-user:${clientMessageId ?? turnId ?? turnIndex}`;
-      candidates.push({ sourceId: id, row: { id, role: 'user', text: displayAsyncReply(input, questions), tools: [], turnId, status, at,
+      candidates.push({ sourceId: id, row: { id, role: 'user', text: displayAsyncReply(input, questions), tools: [], turnId, status, at, order: 0,
         ...(clientMessageId ? { commandId: clientMessageId } : {}) } });
     }
     for (const [itemIndex, item] of items.entries()) {
       if (!isRecord(item)) continue;
+      const itemAt = nativeItemTime(item, turn, at);
       const cached = previous?.context === context ? previous.items.get(item) : null;
-      if (cached && (typeof item.id === 'string' || cached.index === itemIndex) && item.type !== 'steeringUserMessage') {
+      if (cached && (typeof item.id === 'string' || cached.index === itemIndex) && item.type !== 'steeringUserMessage' && (!cached.candidate || cached.candidate.row.at === itemAt)
+        && (!cached.candidate || cached.candidate.row.role !== 'user' || JSON.stringify(cached.candidate.row.replaceSourceRowIds ?? []) === JSON.stringify(replacementIds(cached.candidate.row.commandId, cached.candidate.row.id)))) {
         itemCache.set(item, cached);
         if (cached.candidate) candidates.push(cached.candidate);
         continue;
@@ -602,7 +661,8 @@ function projectTurn(turn, turnIndex, questions, answers, previous, dependencies
         if (role === 'user') text = displayAsyncReply(text, questions);
       } else if (item.type === 'steeringUserMessage') {
         const serverItem = typeof item.clientUserMessageId === 'string' ? usersByClient.get(item.clientUserMessageId) : null;
-        id = string(item.serverUserMessageId) ?? string(serverItem?.id) ?? id;
+        // 同一 caller 的临时 steering UUID 与正式 user ID 属于同一输入，临时身份使用稳定前缀。
+        id = string(item.serverUserMessageId) ?? string(serverItem?.id) ?? (typeof item.clientUserMessageId === 'string' ? `pending-user:${item.clientUserMessageId}` : id);
         role = 'user';
         text = textContent(Array.isArray(item.input) ? item.input.filter(isRecord) : []);
         text = displayAsyncReply(text, questions);
@@ -619,14 +679,28 @@ function projectTurn(turn, turnIndex, questions, answers, previous, dependencies
       if (!role || (!text && !tools.length && !asyncQuestions.length)) continue;
       // 原生 caller id 是通信记录关联依据；同文案可能来自不同作者，不能按文字去重。
       const commandId = role === 'user' ? string(item.clientId) ?? string(item.clientUserMessageId) : null;
-      const row = { id, role, text, tools, turnId, status, at,
+      const replacedSources = role === 'user' ? replacementIds(commandId, id) : [];
+      const inputStatus = role !== 'user' ? undefined : item.type === 'steeringUserMessage'
+        ? string(item.serverUserMessageId) || usersByClient.has(item.clientUserMessageId) ? 'accepted' : string(item.status) ?? 'pending'
+        : 'accepted';
+      const row = { id, role, text, tools, turnId, status, at: itemAt, order: itemIndex + 1,
+        ...(inputStatus ? { inputStatus } : {}),
         ...(commandId ? { commandId } : {}),
+        ...(replacedSources.length ? { replaceSourceRowIds: replacedSources } : {}),
         ...(asyncQuestions.length ? { asyncQuestions } : {}) };
       const candidate = { sourceId, row };
       itemCache.set(item, { index: itemIndex, candidate });
       candidates.push(candidate);
     }
     return { source: turn, index: turnIndex, context, candidates, items: itemCache, dependencies, silent };
+}
+
+/** @param {Value} item @param {Value} turn @param {number|null} fallback */
+function nativeItemTime(item, turn, fallback) {
+  const mapped = item.type === 'commandExecution' ? turn.commandExecutionStartedAtMsById?.[item.id]
+    : item.type === 'agentMessage' ? turn.aeonAssistantMessageStartedAtMsById?.[item.id] ?? turn.agentMessageCompletedAtMsById?.[item.id] : undefined;
+  // 长轮中的新内容有原生 item 时间；只在原 owner 没提供时才沿用 turn 起点，不能用观察时间冒充。
+  return [item.startedAtMs, mapped, item.completedAtMs].find(value => typeof value === 'number' && Number.isFinite(value) && value >= 0) ?? fallback;
 }
 
 /** @param {Value} state @param {number} revision @param {Projection} projection @returns {View} */
@@ -637,7 +711,9 @@ function projectView(state, revision, projection) {
   const model = string(state.latestCollaborationMode?.settings?.model) ?? string(state.latestModel);
   const latest = turns.at(-1);
   const latestTurnId = string(latest?.turnId) ?? string(latest?.id);
-  return { rows, currentTurnId, latestTurnId, status, requests, revision, ...(model ? { nativeControlsCurrent: { model, reasoningEffort: string(state.latestReasoningEffort), modelProvider: string(state.modelProvider) } } : {}) };
+  const historyComplete = state.turnHistory?.history?.isComplete;
+  return { rows, currentTurnId, latestTurnId, status, requests, revision, ...(typeof historyComplete === 'boolean' ? { historyComplete } : {}),
+    ...(model ? { nativeControlsCurrent: { model, reasoningEffort: string(state.latestReasoningEffort), modelProvider: string(state.modelProvider) } } : {}) };
 }
 
 /** The exact packaged renderer x1t/p1t identity and public field mapping.

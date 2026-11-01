@@ -258,6 +258,7 @@ const ChatListInternal = React.memo((props: {
     const showScrollButtonRef = React.useRef(false);
     const headerBackdropVisibleRef = React.useRef(false);
     const bottomDockVisibleRef = React.useRef(true);
+    const olderGestureRef = React.useRef(false), olderGestureSeenRef = React.useRef(false), olderGesturePermitRef = React.useRef(false);
     const scrollMetricsRef = React.useRef({
         offsetY: 0,
         contentHeight: 0,
@@ -338,6 +339,7 @@ const ChatListInternal = React.memo((props: {
         listReadyRef.current = false;
         requestedWindowEndRef.current = 0;
         setOldestRenderedId(null);
+        olderGestureRef.current = false; olderGestureSeenRef.current = false; olderGesturePermitRef.current = false;
         setOlderBlocked(null);
     }, [props.sessionId]);
 
@@ -609,6 +611,7 @@ const ChatListInternal = React.memo((props: {
     const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
         const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
         const distanceFromNewest = Math.max(0, contentOffset.y);
+        if (config.noninvasiveLocal && olderGestureRef.current && distanceFromNewest > scrollMetricsRef.current.offsetY + 1) olderGesturePermitRef.current = true;
         scrollMetricsRef.current.offsetY = distanceFromNewest;
         if (contentSize.height > 0) {
             scrollMetricsRef.current.contentHeight = contentSize.height;
@@ -690,6 +693,8 @@ const ChatListInternal = React.memo((props: {
         invisibleOlderPagesRef.current = 0;
     }, [sessionId]);
     const fillOlder = useCallback(() => {
+        // 布局/新消息也会进入短列表的阈值；CodeLight 必须有新的用户向旧历史滚动意图，不能首屏自动翻页。
+        if (config.noninvasiveLocal && !olderGesturePermitRef.current) return;
         // Measured layout only, not onLoad: FlashList never reports a first
         // layout for zero rows, and a window whose rows all group away is
         // exactly the case that must keep paging.
@@ -698,11 +703,12 @@ const ChatListInternal = React.memo((props: {
         if (contentHeight - viewportHeight - offsetY >= viewportHeight * START_REACHED_VIEWPORTS) return;
         const all = messagesRef.current;
         const currentEnd = windowRef.current.length;
-        if (all.length === 0 || currentEnd <= 0) return;
+        if ((all.length === 0 || currentEnd <= 0) && !config.noninvasiveLocal) return;
         // A growth already requested but not yet rendered.
         if (currentEnd < requestedWindowEndRef.current) return;
         const nextEnd = messageWindowEnd(all, currentEnd + WINDOW_PAGE, config.noninvasiveLocal === true);
         if (nextEnd > currentEnd) {
+            if (config.noninvasiveLocal) olderGesturePermitRef.current = false;
             requestedWindowEndRef.current = nextEnd;
             setOldestRenderedId(all[nextEnd - 1].id);
             return;
@@ -730,6 +736,7 @@ const ChatListInternal = React.memo((props: {
         const { hasMoreOlder: more, isLoadingOlder: loading, olderBlocked: blocked, active } = paginationRef.current;
         if (!active || !more || loading || blocked || pendingOlderRef.current
             || invisibleOlderPagesRef.current >= MAX_INVISIBLE_OLDER_PAGES) return;
+        if (config.noninvasiveLocal) olderGesturePermitRef.current = false;
         // Settlement re-checks through state, not directly: the promise can
         // settle before React has committed the store's new flags. Only a page
         // that moved the cursor re-checks; a no-op rests until the next
@@ -764,16 +771,20 @@ const ChatListInternal = React.memo((props: {
         fillOlder();
     }, [fillOlder, messages, windowedMessages, props.isLoadingOlder, props.hasMoreOlder, props.active, olderBlocked, olderSettled]);
     const retryOlder = useCallback(() => {
+        olderGesturePermitRef.current = true;
         pendingOlderRef.current = null;
         setOlderBlocked(null);
     }, []);
     const loadMoreOlder = useCallback(() => {
+        olderGesturePermitRef.current = true;
         invisibleOlderPagesRef.current = 0;
         setOlderBlocked(null);
+        fillOlderRef.current();
     }, []);
     const olderStatus = olderBlocked === 'error' && props.hasMoreOlder ? 'error'
         : olderBlocked === 'limit' && props.hasMoreOlder ? 'load-more'
-        : props.isLoadingOlder && windowedMessages.length >= messages.length ? 'loading' : 'idle';
+        : props.isLoadingOlder && windowedMessages.length >= messages.length ? 'loading'
+        : config.noninvasiveLocal && props.hasMoreOlder && messages.length === 0 ? 'load-more' : 'idle';
 
     // FlashList lacks React Native Web FlatList's inverted-wheel correction.
     // Keep the mobile coordinate system, correcting only web chat gestures.
@@ -810,6 +821,10 @@ const ChatListInternal = React.memo((props: {
                 viewabilityConfig={SYNTAX_VIEWABILITY}
                 onViewableItemsChanged={syntaxViewport.update}
                 onScroll={handleScroll}
+                onScrollBeginDrag={() => { olderGestureRef.current = true; olderGestureSeenRef.current = true; }}
+                onScrollEndDrag={() => { olderGestureRef.current = false; }}
+                onMomentumScrollBegin={() => { olderGestureRef.current = olderGestureSeenRef.current; }}
+                onMomentumScrollEnd={() => { olderGestureRef.current = false; olderGestureSeenRef.current = false; }}
                 scrollEventThrottle={16}
                 onLayout={(event) => {
                     scrollMetricsRef.current.viewportHeight = event.nativeEvent.layout.height;

@@ -10,10 +10,43 @@ import { PairingInvitations, createPairingGateway } from '../src/happy/pairing-g
 import nacl from 'tweetnacl';
 import { RelayTunnelClient, normalizeRelayAddress, validateRelayAddress } from '../src/network/relay-client.mjs';
 import { safePath, safeHeaders } from '../src/network/relay-protocol.mjs';
+import { createRequire } from 'node:module';
+import { io } from 'socket.io-client';
+import { DeviceProofVerifier } from '../src/network/device-proof.mjs';
+import { DeviceRegistry } from '../src/happy/device-registry.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /** @param {import('node:http').Server} server */
 async function listen(server) { server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address(); assert.ok(address && typeof address !== 'string'); return 'http://127.0.0.1:' + address.port; }
 const token = 'a'.repeat(43);
+test('sealed peer proof survives a prefixed relay and authenticates the realtime backend header', { timeout: 10000 }, async t => {
+  const require = createRequire(new URL('../packages/relay/package.json', import.meta.url));
+  const { Server } = require(['socket', 'io'].join('.'));
+  const backend = createServer(), ioServer = new Server(backend, { path: '/v1/updates', transports: ['websocket'] });
+  ioServer.use((/** @type {Record<string,any>} */ socket, /** @type {(error?:Error)=>void} */ next) => next(socket.handshake.headers.authorization === 'Bearer fixture-device' ? undefined : Error('Missing authentication token')));
+  ioServer.on('connection', (/** @type {Record<string,any>} */ socket) => socket.on('read-diagnostic', (/** @type {(value:Record<string,any>)=>void} */ ack) => ack({ connected: true })));
+  const upstream = await listen(backend), mac = nacl.box.keyPair(), phone = nacl.box.keyPair();
+  const publicKey = Buffer.from(phone.publicKey).toString('base64url'), device = createHash('sha256').update(publicKey).digest('hex').slice(0, 24);
+  const directory = await mkdtemp(join(tmpdir(), 'codelight-relay-proof-')), devices = new DeviceRegistry(join(directory, 'devices.json'), []);
+  assert.equal(await devices.approve(publicKey, 'Fixture', 'fixture-device'), device);
+  let base = '';
+  const invitations = new PairingInvitations({ key: mac.secretKey, credentials: { token: 'fixture-device', secret: 'a'.repeat(43) } });
+  const proof = new DeviceProofVerifier({ key: mac.secretKey, devices, origins: () => [base] });
+  const gateway = createPairingGateway({ upstream, invitations, devices, proof, expectedOrigin: () => base });
+  const gatewayUrl = await listen(gateway), relay = createNetworkRelay({ token }), origin = await listen(relay);
+  const client = new RelayTunnelClient({ serverUrl: origin, token, seed: randomBytes(32), upstream: gatewayUrl });
+  /** @type {import('socket.io-client').Socket|undefined} */ let socket;
+  t.after(async () => { socket?.disconnect(); client.close(); relay.close(); gateway.closeAllConnections(); gateway.close(); ioServer.close(); invitations.close(); await devices.tail; await rm(directory, { recursive: true, force: true }); });
+  base = await client.start(); client.activate();
+  const nonce = randomBytes(24), payload = Buffer.from(JSON.stringify({ version: 2, token: 'fixture-device', origin: base, method: 'GET', path: '/v1/updates/', at: Date.now() }));
+  const header = 'CodeLight ' + Buffer.from(JSON.stringify({ publicKey, nonce: nonce.toString('base64url'), ciphertext: Buffer.from(nacl.box(payload, nonce, mac.publicKey, phone.secretKey)).toString('base64url') })).toString('base64url');
+  socket = io(origin, { path: new URL(base).pathname + '/v1/updates/', extraHeaders: { Authorization: header }, auth: { clientType: 'user-scoped' }, transports: ['websocket'], reconnection: false });
+  const connection = socket;
+  await new Promise((resolve, reject) => { connection.once('connect', () => resolve(undefined)); connection.once('connect_error', reject); });
+  assert.deepEqual(await socket.timeout(1000).emitWithAck('read-diagnostic'), { connected: true });
+});
 test('relay validates addresses and rejects proxy targets, header injection and unconfigured registration', async () => {
   assert.equal(normalizeRelayAddress('https://relay.example/'), 'https://relay.example');
   for (const url of ['http://relay.example', 'https://user:key@relay.example', 'https://relay.example?key=a', 'https://relay.example/path', 'https://relay.example/#token']) assert.throws(() => normalizeRelayAddress(url));

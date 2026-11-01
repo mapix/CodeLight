@@ -68,7 +68,7 @@ export default {
         scheme: localBridge ? 'codelight' : 'happy',
         userInterfaceStyle: "automatic",
         ios: {
-            ...(localBridge ? { buildNumber: '2026110102' } : {}),
+            ...(localBridge ? { buildNumber: '2026110116' } : {}),
             supportsTablet: true,
             bundleIdentifier: nativeBundleId,
             config: {

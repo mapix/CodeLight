@@ -41,6 +41,25 @@ export const it: TranslationStructure = {
         unconfirmed: "Aggiornamento non confermato. Verifica delle impostazioni originali; non ripetere la modifica.",
     },
 
+    codeLightChannels: {
+        title: "Connessione",
+        automatic: "Automatica",
+        automaticDetail: "Usa una connessione disponibile e verificata.",
+        local: "Rete locale",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "Connesso",
+        available: "Disponibile",
+        probing: "Verifica",
+        failed: "Non disponibile",
+        switching: "Connessione…",
+        notConnected: "Non connesso",
+        current: "Percorso attuale",
+        latency: ({ ms }: { ms: number }) => "{ms} ms".replace("{ms}", String(ms)),
+        latencyUnknown: "Latenza sconosciuta",
+        switchFailed: "Impossibile cambiare connessione. Il percorso attuale rimane invariato.",
+    },
+
     codeLightLoading: {
         titles: "Caricamento dei titoli delle sessioni Codex…",
         discovered: ({ count }: { count: number }) => "Sessioni Codex trovate: {count} · caricamento in corso…".replace("{count}", String(count)),
@@ -602,6 +621,8 @@ export const it: TranslationStructure = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "Il risultato non è confermato. Controlla l’operazione originale; non verrà inviata di nuovo.",
+        checkResult: "Controlla risultato",
         title: "Domanda",
         submit: "Invia risposta",
         chooseMultiple: "Scegli tutte quelle pertinenti",

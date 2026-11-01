@@ -2,6 +2,7 @@ import { SessionContentView } from '@/components/SessionContentView';
 import { MobileGlassBackdrop } from '@/components/MobileGlass';
 import { AgentGoalBar, type AgentGoalAction } from '@/components/AgentGoalBar';
 import { AgentQuestionBanner } from '@/components/AgentQuestionBanner';
+import { PeerChannelControl } from '@/components/PeerChannelControl';
 import { AgentInput } from '@/components/AgentInput';
 import { resolveVisibleAgentGoalStatus } from '@/components/agentGoalStatus';
 import type { MultiTextInputHandle } from '@/components/MultiTextInput';
@@ -430,9 +431,11 @@ export const SessionView = React.memo((props: { id: string }) => {
     }, [session, isDataReady, pendingChat]);
     const headerRight = session && !isTablet && Platform.OS !== 'web'
         ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            {isNoninvasiveBridge(session.metadata) ? <PeerChannelControl presentation="header" /> : null}
             <Pressable
                 onPress={() => router.push(`/session/${session.id}/info`)}
-                hitSlop={10}
+                style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }}
             >
                 <Avatar
                     bot={!!session.metadata?.bot}
@@ -446,6 +449,7 @@ export const SessionView = React.memo((props: { id: string }) => {
                     thumbhash={avatar?.thumbhash}
                 />
             </Pressable>
+            </View>
         )
         : null;
 

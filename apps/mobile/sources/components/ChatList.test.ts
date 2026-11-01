@@ -261,6 +261,26 @@ describe('ChatList automatic history', () => {
         state.session = { id: 'session', metadata: null, thinking: false, agentState: { requests: {} } };
         return renderChat(undefined);
     }
+    it('CodeLight layout cannot load older history and one gesture cannot walk further pages after settling', async () => {
+        state.native = true;
+        const renderer = open(history(50)); const page = pendingPage();
+        layout(renderer); expect(page.started()).toBe(0);
+        act(() => {
+            const list = renderer.root.findByType('FlashList');
+            list.props.onScrollBeginDrag();
+            list.props.onScroll({ nativeEvent: { contentOffset: { y: 40 }, contentSize: { height: 600 }, layoutMeasurement: { height: 600 } } });
+            list.props.onScrollEndDrag();
+        });
+        expect(page.started()).toBe(1);
+        await settle(renderer, history(50), true, page.finish);
+        expect(page.started()).toBe(1);
+        act(() => {
+            const list = renderer.root.findByType('FlashList'); list.props.onScrollBeginDrag();
+            list.props.onScroll({ nativeEvent: { contentOffset: { y: 80 }, contentSize: { height: 600 }, layoutMeasurement: { height: 600 } } });
+            list.props.onScrollEndDrag();
+        });
+        expect(page.started()).toBe(2);
+    });
     // FlashList's own measurements, in the order they arrive on a real mount.
     // onLoad never fires for zero rows, so it is only emitted when rows exist.
     function layout(renderer: ReturnType<typeof create>, { content = 600, viewport = 600, offset = 0 } = {}) {

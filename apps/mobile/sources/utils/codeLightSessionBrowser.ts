@@ -41,7 +41,6 @@ function matchesSearch(session: Session, title: string, needle: string): boolean
 }
 
 const byRecency = (a: Entry, b: Entry) => b.at - a.at || a.order - b.order;
-const byRootOrder = (a: Entry, b: Entry) => Number(b.pinned) - Number(a.pinned) || byRecency(a, b);
 
 /** Build a display forest without changing the original parent's evidence. */
 function hierarchy(entries: Entry[]): { roots: Entry[]; children: Map<string, Entry[]> } {
@@ -91,7 +90,21 @@ function hierarchy(entries: Entry[]): { roots: Entry[]; children: Map<string, En
         if (!bucket) { bucket = []; children.set(parent, bucket); }
         bucket.push(entry);
     }
-    roots.sort(byRootOrder);
+    const familyRecency = new Map(entries.map(entry => [entry.session.id, entry.at]));
+    // 在已断环的展示森林上后序汇总；新子会话不能藏在旧父组之后，原更新时间及 parentId 不被改写。
+    const traversal = roots.map(entry => ({ entry, visited: false }));
+    while (traversal.length) {
+        const item = traversal.pop()!;
+        if (!item.visited) {
+            traversal.push({ entry: item.entry, visited: true });
+            for (const child of children.get(item.entry.session.id) ?? []) traversal.push({ entry: child, visited: false });
+        } else {
+            let latest = item.entry.at;
+            for (const child of children.get(item.entry.session.id) ?? []) latest = Math.max(latest, familyRecency.get(child.session.id) ?? child.at);
+            familyRecency.set(item.entry.session.id, latest);
+        }
+    }
+    roots.sort((a, b) => (familyRecency.get(b.session.id) ?? b.at) - (familyRecency.get(a.session.id) ?? a.at) || Number(b.pinned) - Number(a.pinned) || a.order - b.order);
     for (const bucket of children.values()) bucket.sort(byRecency);
     return { roots, children };
 }

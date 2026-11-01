@@ -65,3 +65,26 @@ test('Mac dashboard current Chinese locale explicitly translates the gateway req
   }
   for (const key of ['Retry', 'Disconnect', 'Copy pairing link', 'Refresh QR', 'Could not update device. Try again.']) assert.ok(translations.get(key)?.trim(), key);
 });
+
+
+test('Mac pause completes before Start becomes available and intentional pause is not failure', { skip: process.platform !== 'darwin' }, async () => {
+  const source = await readFile(new URL('../apps/mac/CodeLight.swift', import.meta.url), 'utf8');
+  const declarations = source.split('// BEGIN CODELIGHT SERVICE VALUES\n')[1]?.split('// END CODELIGHT SERVICE VALUES')[0];
+  assert.ok(declarations);
+  const directory = await mkdtemp(join(tmpdir(), 'codelight-service-values-'));
+  try {
+    const script = join(directory, 'service.swift');
+    await writeFile(script, declarations + `
+precondition(ServicePhase.starting.canPause && !ServicePhase.starting.canStart)
+precondition(ServicePhase.running.canPause && !ServicePhase.running.canStart)
+precondition(!ServicePhase.pausing.canPause && !ServicePhase.pausing.canStart)
+precondition(ServicePhase.pausing.terminated() == .paused)
+precondition(ServicePhase.paused.canStart && !ServicePhase.paused.canPause)
+precondition(ServicePhase.running.terminated() == .failed && ServicePhase.failed.canStart)
+print("service-phase-passed")
+`);
+    const sdk = await execute('/usr/bin/xcrun', ['--show-sdk-path']);
+    const result = await execute('/usr/bin/xcrun', ['swift', '-sdk', sdk.stdout.trim(), script], { timeout: 30000 });
+    assert.match(result.stdout, /service-phase-passed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

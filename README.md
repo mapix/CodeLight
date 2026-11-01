@@ -63,21 +63,41 @@ For a signed iPhone trial, use `pnpm build:mobile --device YOUR_DEVICE_ID --team
 
 ## Behavior
 
-- Titles load progressively across all pages, grouped by original project across worktrees.
+- Titles publish most recent first using original Codex update time, grouped by project across worktrees. Sessions older than 72 hours initially load basic title/project/time fields; opening one loads its richer data.
+- Paired phones restore an account-bound encrypted title cache. Existing rows remain usable while titles synchronize; stale connection results show synchronization until a current request can confirm failure. Opening a chat never waits for the whole title catalog.
 - A session tap requests desktop selection immediately and starts synchronization; no extra Open Desktop step.
 - Native project conversations use a session select box. Long titles fit the closed control, and the platform menu lists the available conversations.
 - Foreground project headers and visible session rows use lightweight active/waiting summaries from Codex. Unknown, stale or disconnected observations remain explicit; message history is loaded only for selected sessions.
+- Opening a session waits for its existing observation and reads a fresh recent window, positioned at the newest messages. Earlier history loads in bounded pages only when you scroll upward; list/background work does not prefetch old history. A long active turn's start time is not used to date every new message.
 - After pairing, the Mac App defaults to a statistics dashboard with realtime/cumulative gateway traffic and interaction counts. Use the Statistics/Pairing switch to scan again.
-- Mac public access can use Cloudflare or a compatible self-hosted network Relay.
-  Expand Public access, enter the HTTPS Relay address/access key and validate it.
-  The phone continues scanning the QR; it has no provider setting. The public
-  Relay forwards opaque HTTP/WebSocket streams and holds no session or account store.
+- Mac **Start** and **Pause** control the CodeLight service. Pause completes its owned service shutdown before Start becomes available. Pairing, settings and operation journals are retained; original Codex sessions keep running.
+- Mac **Connections** has independent Local network and Cloudflare checkboxes,
+  plus Relay after a compatible HTTPS Relay server/key has been configured.
+  Available channels start enabled by default; later checkbox choices persist.
+  They can run together, and a failed channel does not stop the others.
+- One QR carries the enabled connection addresses and pinned Mac identity.
+  The phone automatically chooses an available verified route. Open its
+  **Connection** sheet from global Settings or the session header icon to choose another channel or return to Automatic at any
+  time; the same peer/session cache and original command IDs are retained.
+- Use **Configure Relay** on Mac to validate and save a compatible server/key.
+  The public Relay forwards opaque HTTP/WebSocket streams and holds no session
+  or account store. Local networking keeps content and device authorization
+  sealed; public channels retain HTTPS/WSS certificate validation.
+- New question prompts remain accessible while you read earlier history.
+  Select an option, then explicitly submit; the original question identity and
+  native acceptance/unknown-receipt rules still apply.
 - Device authorization, rename and individual revocation are managed by the Mac App.
 - Phone background refresh requests a 60-minute minimum schedule from iOS; the operating system chooses actual runs. Mac observers keep collecting selected Codex sources.
 - Native model and reasoning controls update the existing desktop owner, with conflict and unknown-receipt protection.
 - User-facing strings follow the phone's selected language with a documented fallback. Native UI and runtime support are verified separately from TypeScript or fixture results.
 
-Cloudflare Quick Tunnel addresses can change on Mac restart, requiring another scan. Live APNs push needs publisher credentials and push-enabled signing; the current local test setup is not a notarized/store release.
+Local addresses/ports and Cloudflare Quick Tunnel addresses can change on Mac
+restart. A configured Relay keeps its authenticated route across reconnections.
+The phone can obtain updated addresses through a working authenticated channel;
+scan the current QR if every stored route is unavailable. Allow local-network
+access when iOS prompts if you want to use LAN. Live APNs push needs publisher
+credentials and push-enabled phone signing; the source-built iPhone client is
+not an App Store/TestFlight release.
 
 The normal user entry point is the Mac App. `scripts/codelight-daemon.mjs` remains
 an advanced self-hosted/diagnostic entry point with an explicit server/profile;

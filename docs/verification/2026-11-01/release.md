@@ -2,7 +2,7 @@
 
 ## Published artifacts
 
-- Source snapshot: `dc52e46e42118b17cab082b7a75d73d42df48c57` at <https://github.com/mapix/CodeLight>.
+- Source snapshot: `3010163abea4c0080908bcd140b59e9552b0c226` at <https://github.com/mapix/CodeLight>.
 - Release: <https://github.com/mapix/CodeLight/releases/tag/v0.4.0>.
 - Static download page: <https://codelight.novarock.io/>.
 - Mac archive: `CodeLight-0.4.0-macos-arm64.zip`, 110,291,784 bytes.
@@ -18,6 +18,14 @@ the publisher's OAuth scope cannot create GitHub workflows. Private vulnerabilit
 reporting was enabled on the public repository.
 
 ## Mac and phone
+
+The source history and old source ZIP were later cleaned with the repository
+owner's authorization to replace a saved private Relay hostname in the deployment
+example. Only that example changed in the historical source trees; source commit
+identities changed. The revised source ZIP SHA-256 is
+`5a8afdc61e79cebce8caab53bbac8aacbf3911b9a5386862b204f83454413ccc`.
+The Mac ZIP, its checksum and release metadata did not change. This removes the
+address from current reachable source and assets, not earlier external copies.
 
 The final Mac was rebuilt with actual-version notices for Node 24.22.2 and
 cloudflared 2026.10.7. Its six bundled executables passed signature checks.

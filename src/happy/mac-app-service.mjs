@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import nacl from 'tweetnacl';
-import { PairingInvitations, createPairingGateway } from './pairing-gateway.mjs';
+import { PairingInvitations } from './pairing-gateway.mjs';
 import { readOptionalPrivateJson, writeDurablePrivateJson } from './discovery-persistence.mjs';
 import { CodeLightMacDaemon } from './mac-daemon.mjs';
 import { LocalSourceDiscovery } from './discovery.mjs';
@@ -18,7 +18,8 @@ import { DeviceRegistry } from './device-registry.mjs';
 import { loadAPNsSender } from './apns-sender.mjs';
 import { NotificationDispatcher } from './notification-dispatcher.mjs';
 import { GatewayMetrics } from './gateway-metrics.mjs';
-import { PublicAccessManager, EntryProbes } from '../network/public-access.mjs';
+import { MacConnectionService } from './mac-connection-service.mjs';
+import { closeOwnedResources, stopOwnedChildren } from './owned-shutdown.mjs';
 
 /** @typedef {Record<string,any>} Value */
 const runtime = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -31,7 +32,7 @@ const cloudflared = flags.get('--cloudflared') ?? join(runtime, 'cloudflared');
 const lockfile = createRequire(import.meta.url)('proper-lockfile');
 /** @type {Set<import('node:child_process').ChildProcess>} */ const children = new Set();
 /** @type {CodeLightMacDaemon|null} */ let daemon = null;
-/** @type {ReturnType<typeof createPairingGateway>|null} */ let gateway = null;
+/** @type {MacConnectionService|null} */ let connections = null;
 /** @type {NotificationDispatcher|null} */ let notifications = null;
 /** @type {PairingInvitations|null} */ let invitations = null;
 /** @type {(()=>Promise<void>)|null} */ let releaseLease = null;
@@ -39,32 +40,23 @@ const lockfile = createRequire(import.meta.url)('proper-lockfile');
 let publicOrigin = '', closing = false;
 /** @type {GatewayMetrics|null} */ let metrics = null;
 /** @type {ReturnType<typeof setInterval>|null} */ let metricsTimer = null;
-/** @type {PublicAccessManager|null} */ let access = null;
-const entryProbes = new EntryProbes();
 /** Local UI pipe only; invitations/tokens never enter a public status API or ordinary logs. @param {Value} value */
-function notify(value) { process.stdout.write(JSON.stringify(value) + '\n'); }
+function notify(value) { if (!closing && !process.stdout.destroyed) process.stdout.write(JSON.stringify(value) + '\n'); }
 
 async function close() {
   if (closing) return; closing = true;
-  await notifications?.close();
   if (renewal) clearInterval(renewal);
   if (metricsTimer) clearInterval(metricsTimer);
-  await access?.close();
-  await daemon?.close();
-  invitations?.close();
-  gateway?.closeAllConnections();
-  await new Promise(resolveClose => gateway ? gateway.close(resolveClose) : resolveClose(null));
-  await metrics?.close();
-  for (const child of children) child.kill('SIGTERM');
-  await Promise.allSettled([...children].map(async child => {
-    await Promise.race([once(child, 'exit'), new Promise(r => setTimeout(r, 5000))]);
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-  }));
-  await releaseLease?.();
+  // 任一资源清理失败仍要关闭本地数据库进程；不能留下孤儿 writer 后先释放服务 lease。
+  await closeOwnedResources([() => notifications?.close(), () => connections?.close(), () => daemon?.close(),
+    () => invitations?.close(), () => metrics?.close()], async () => {
+    await stopOwnedChildren([...children]);
+  }, async () => { await releaseLease?.(); });
 }
 process.once('SIGTERM', () => { close().finally(() => process.exit(0)); });
 process.once('SIGINT', () => { close().finally(() => process.exit(0)); });
 process.once('uncaughtException', () => { notify({ type: 'error', code: 'service-failed' }); close().finally(() => process.exit(1)); });
+process.stdout.on('error', error => { if (/** @type {NodeJS.ErrnoException} */ (error).code === 'EPIPE') close().finally(() => process.exit(0)); });
 
 /** @param {string} command @param {string[]} args @param {NodeJS.ProcessEnv} env @param {string} logName */
 async function child(command, args, env, logName) {
@@ -96,9 +88,12 @@ async function owner() {
   if (!response.ok || reply.success !== true || typeof reply.token !== 'string') throw Error('owner-authentication-failed');
   pair.secretKey.fill(0); saved.token = reply.token; await writeDurablePrivateJson(path, saved); return saved;
 }
-function issue() {
-  if (!invitations || !publicOrigin || closing) return;
-  const grant = invitations.issue(publicOrigin); notify({ type: 'ready', origin: publicOrigin, pairingUrl: grant.url, expires: grant.expires, temporary: true });
+/** @param {boolean} [force] */
+function issue(force = false) {
+  if (!connections || closing) return;
+  publicOrigin = connections.primaryOrigin();
+  try { const pairing = connections.pairing(force); if (pairing) notify({ type: 'ready', ...pairing }); }
+  catch { notify({ type: 'diagnostic', code: 'pairing-invitation-pending' }); }
 }
 async function main() {
   await mkdir(state, { recursive: true, mode: 0o700 }); await mkdir(join(state, 'connector'), { recursive: true, mode: 0o700 });
@@ -146,36 +141,47 @@ async function main() {
   try { metrics = await GatewayMetrics.load(join(state, 'gateway-metrics.json')); }
   // 累计文件读取失败时只继续统计本次流量；旧累计值未知，不能伪装成零或覆盖原文件。
   catch { notify({ type: 'diagnostic', code: 'gateway-metrics-unavailable' }); metrics = new GatewayMetrics({ cumulativeKnown: false }); }
-  gateway = createPairingGateway({ upstream: backendOrigin, invitations, devices, metrics, notificationsAvailable: !!sender, entryProbe: challenge => entryProbes.response(challenge) }); gateway.listen(0, '127.0.0.1'); await once(gateway, 'listening');
   const publishMetrics = () => { if (!closing && metrics) notify({ type: 'metrics', metrics: metrics.snapshot({ connectedDevices: devices.list().filter(device => !device.revoked && device.connected).length }) }); };
   publishMetrics(); metricsTimer = setInterval(publishMetrics, 1000);
-  const address = gateway.address(); if (!address || typeof address === 'string') throw Error('gateway-address-unavailable');
   daemon = new CodeLightMacDaemon({ directory: join(state, 'connector'), leaseDirectory: join(homedir(), '.codelight/leases'), account,
+    observeBackground: !!sender,
     onRpc: () => metrics?.rpc(), viewedSessions: () => devices.viewedSessions(), discovery: new LocalSourceDiscovery({ storage: new BundledCodexStorage() }), only: source => source.app === 'codex' });
   daemon.on('diagnostic', value => notify({ type: 'diagnostic', code: value.code }));
   daemon.on('notification-observation', value => notifications?.observe(value.sourceKey, value.sessionId, value.summary).catch(() => notify({ type: 'diagnostic', code: 'notification-observation-pending' })));
   await daemon.start();
-  notify({ type: 'starting', phase: 'public-connection' });
-  access = new PublicAccessManager({ state, upstream: `http://127.0.0.1:${address.port}`, cloudflared, probes: entryProbes });
-  access.on('ready', (/** @type {Value} */ value) => { publicOrigin = value.origin; issue(); });
-  access.on('configuration', (/** @type {Value} */ value) => notify({ type: 'access-configuration', configuration: value }));
-  access.on('status', (/** @type {Value} */ value) => notify({ type: 'access-status', ...value }));
-  renewal = setInterval(issue, 90000);
+  notify({ type: 'starting', phase: 'connection-channels' });
+  connections = new MacConnectionService({ state, cloudflared, upstream: backendOrigin, account, devices, invitations, daemon,
+    metrics, notificationsAvailable: !!sender });
+  connections.on('configuration', (/** @type {Value} */ value) => notify({ type: 'access-configuration', configuration: value }));
+  connections.on('channels', (/** @type {Value} */ value) => { notify({ type: 'access-channels', ...value }); issue(); });
+  connections.on('diagnostic', (/** @type {Value} */ value) => notify({ type: 'diagnostic', ...value }));
+  renewal = setInterval(() => issue(true), 90000);
   createInterface({ input: process.stdin }).on('line', value => {
     try {
       const command = JSON.parse(value);
-      if (command.type === 'refresh-invite') issue();
+      if (command.type === 'refresh-invite') issue(true);
       else if (command.type === 'rename-device' && typeof command.id === 'string' && typeof command.name === 'string') devices.rename(command.id, command.name).catch(() => notify({ type: 'diagnostic', code: 'device-operation-failed' }));
-      else if (command.type === 'revoke-device' && typeof command.id === 'string') devices.revoke(command.id).then(issue).catch(() => notify({ type: 'diagnostic', code: 'device-operation-failed' }));
-      else if (command.type === 'configure-access' && typeof command.requestId === 'string' && command.requestId.length <= 128) {
+      else if (command.type === 'revoke-device' && typeof command.id === 'string') devices.revoke(command.id).then(() => issue(true)).catch(() => notify({ type: 'diagnostic', code: 'device-operation-failed' }));
+      else if (command.type === 'set-enabled-channels' && typeof command.requestId === 'string' && command.requestId.length <= 128) {
         const requestId = command.requestId;
-        Promise.resolve().then(() => access?.apply({ mode: command.mode, serverUrl: command.serverUrl, ...(typeof command.token === 'string' ? { token: command.token } : {}) }))
+        Promise.resolve().then(() => {
+          if (!connections) throw Error('connection-service-unavailable');
+          return connections.manager.setEnabled(command.channels);
+        }).then(() => notify({ type: 'access-result', requestId, ok: true }))
+          .catch(() => notify({ type: 'access-result', requestId, ok: false, code: 'connection-channel-update-failed' }));
+      }
+      else if (command.type === 'configure-relay' && typeof command.requestId === 'string' && command.requestId.length <= 128) {
+        const requestId = command.requestId;
+        Promise.resolve().then(() => {
+          if (!connections) throw Error('connection-service-unavailable');
+          return connections.manager.configureRelay({ serverUrl: command.serverUrl, ...(typeof command.token === 'string' ? { token: command.token } : {}) });
+        })
           .then(() => notify({ type: 'access-result', requestId, ok: true }))
-          .catch(() => notify({ type: 'access-result', requestId, ok: false, code: 'public-access-validation-failed' }));
+          .catch(() => notify({ type: 'access-result', requestId, ok: false, code: 'relay-validation-failed' }));
       }
     } catch { /* The local UI pipe accepts only the explicit operations above. */ }
-  });
-  // 公网配置失败只影响入口，服务与配置管道仍可用；不能把用户锁死在坏地址后的重启循环中。
-  access.load().catch(() => notify({ type: 'access-status', state: 'unavailable', code: 'public-access-validation-failed' }));
+  }).once('close', () => { close().finally(() => process.exit(0)); });
+  // 通道启动由同一配置 owner 独立完成；公网失败不能阻断本地连接，也不能新建第二份会话运行时。
+  connections.start().catch(() => { notify({ type: 'access-channels', channels: [], overallState: 'unavailable' }); issue(); });
 }
 main().catch(async error => { notify({ type: 'error', code: error instanceof Error ? error.message : 'service-start-failed' }); await close(); process.exit(1); });

@@ -43,6 +43,25 @@ export const zhHant: TranslationStructure = {
         unconfirmed: "更新結果尚未確認，正在核對原設定，請勿重複修改。",
     },
 
+    codeLightChannels: {
+        title: "連線通道",
+        automatic: "自動選擇",
+        automaticDetail: "使用已驗證的可用連線。",
+        local: "區域網路",
+        cloudflare: "Cloudflare",
+        relay: "Relay",
+        connected: "已連線",
+        available: "可用",
+        probing: "正在檢查",
+        failed: "暫不可用",
+        switching: "正在連線…",
+        notConnected: "未連線",
+        current: "目前通道",
+        latency: ({ ms }: { ms: number }) => "{ms} 毫秒".replace("{ms}", String(ms)),
+        latencyUnknown: "延遲未確認",
+        switchFailed: "通道切換未完成，目前連線保持不變。",
+    },
+
     codeLightLoading: {
         titles: "正在讀取 Codex 會話標題…",
         discovered: ({ count }: { count: number }) => "已發現 {count} 個 Codex 會話，繼續載入中…".replace("{count}", String(count)),
@@ -604,6 +623,8 @@ export const zhHant: TranslationStructure = {
     },
 
     agentQuestion: {
+        replyUnconfirmed: "回答結果尚未確認。請檢查原操作結果；不會重複傳送。",
+        checkResult: "檢查結果",
         title: "問題",
         submit: "傳送回答",
         chooseMultiple: "選擇所有適用項",

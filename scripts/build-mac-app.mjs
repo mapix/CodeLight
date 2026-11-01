@@ -81,18 +81,35 @@ await run('xcrun', ['swiftc', '-parse-as-library', '-O', '-target', 'arm64-apple
 await writeFile(join(output, 'Contents/Info.plist'), `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.learnings.codelight.mac</string><key>CFBundleName</key><string>CodeLight</string><key>CFBundleDisplayName</key><string>CodeLight</string>
 <key>CFBundleIconFile</key><string>CodeLight.icns</string><key>CFBundleExecutable</key><string>CodeLight</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${packageMetadata.version}</string><key>CFBundleVersion</key><string>${appBuild}</string>
-<key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/><key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSLocalNetworkUsageDescription</key><string>Connect your paired phone to CodeLight on the local network.</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/><key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>`);
 const chinese = {
-  "Public access": "公网入口",
+  "Start": "开始",
+  "Pause": "暂停",
+  "Paused": "已暂停",
+  "Pausing…": "正在暂停…",
+  "Connections": "连接方式",
+  "Local network": "本地网络",
+  "Configure Relay": "配置 Relay",
+  "Ready": "已就绪",
+  "Off": "已关闭",
+  "Starting…": "正在启动…",
+  "Reconnecting…": "正在重连…",
+  "Not verified yet": "尚未验证",
+  "Unavailable": "暂不可用",
+  "All connections are off": "所有连接已关闭",
+  "Waiting for connection verification…": "正在等待连接验证…",
+  "The phone chooses an available connection. You can switch connections there anytime.": "手机会自动选择可用连接，也可以随时在手机上切换。",
+  "An address is waiting for verification. The phone can check it when connecting.": "部分地址尚未验证，手机连接时可以继续检查。",
+  "Could not update connection channels. Try again.": "连接方式修改失败，请重试。",
   "Relay server address": "Relay 服务地址",
   "Access key": "访问密钥",
   "Saved key will be reused for this server.": "已保存密钥，仅复用到同一服务地址。",
-  "Validate & connect": "校验并连接",
-  "Validating public entry…": "正在校验公网入口…",
-  "Public entry is reconnecting…": "公网入口正在重连…",
-  "Could not validate the public entry. Check address, access key and network.": "公网入口校验失败，请检查地址、访问密钥和网络。",
- 'Starting CodeLight…': '正在启动 CodeLight…', 'Connecting from anywhere…': '正在连接公网入口…', 'Ready to scan': '可以扫码连接', 'Connection unavailable': '连接暂不可用', 'Your existing Codex sessions on your phone': '在手机上使用电脑已有的 Codex 会话', 'Open CodeLight on your phone and scan this code. No registration or VPN needed.': '打开手机 CodeLight 扫描二维码，无需注册或安装 VPN。', 'Copy pairing link': '复制配对链接', 'Refresh QR': '刷新二维码', 'Retry': '重试', 'This connection is temporary. Scan again after reopening the Mac app.': '这是临时连接。重新打开 Mac App 后，请再次扫码。', 'Paired devices': '连接的设备', 'No devices yet': '尚未连接设备', 'Disconnect': '解除连接', 'Connected': '已连接', 'Offline': '离线', 'Access removed': '已解除连接', 'Notifications configured': '已配置通知', 'Notifications need setup': '通知尚未配置', 'Copied': '已复制', 'Could not update device. Try again.': '设备操作暂未成功，请重试。',
+  "Validate & save Relay": "校验并保存 Relay",
+  "Validating Relay…": "正在校验 Relay…",
+  "Could not validate the Relay connection. Check address, access key and network.": "Relay 连接校验失败，请检查地址、访问密钥和网络。",
+  "The phone keeps all enabled addresses. If addresses change and reconnection fails, scan the current QR code.": "手机会保存所有已启用地址。地址改变且无法重连时，请扫描当前二维码。",
+ 'Starting CodeLight…': '正在启动 CodeLight…', 'Connecting from anywhere…': '正在连接公网入口…', 'Ready to scan': '可以扫码连接', 'Connection unavailable': '连接暂不可用', 'Your existing Codex sessions on your phone': '在手机上使用电脑已有的 Codex 会话', 'Open CodeLight on your phone and scan this code. No registration or VPN needed.': '打开手机 CodeLight 扫描二维码，无需注册或安装 VPN。', 'Copy pairing link': '复制配对链接', 'Refresh QR': '刷新二维码', 'Retry': '重试', 'Paired devices': '连接的设备', 'No devices yet': '尚未连接设备', 'Disconnect': '解除连接', 'Connected': '已连接', 'Offline': '离线', 'Access removed': '已解除连接', 'Notifications configured': '已配置通知', 'Notifications need setup': '通知尚未配置', 'Copied': '已复制', 'Could not update device. Try again.': '设备操作暂未成功，请重试。',
   "Connection ready": "连接已就绪",
   "Only desktop Codex connected through gateway mode is supported.": "只支持使用网关模式接入的桌面Codex",
   "View": "视图",

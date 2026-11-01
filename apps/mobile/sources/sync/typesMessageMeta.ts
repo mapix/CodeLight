@@ -3,6 +3,9 @@ import { z } from 'zod';
 // Shared message metadata schema
 export const MessageMetaSchema = z.object({
     sentFrom: z.string().optional(), // Source identifier
+    /** Original row order breaks equal native timestamps; it is not a message timestamp. */
+    nativeOrder: z.number().int().nonnegative().optional(),
+    nativeRow: z.object({ id: z.string().min(1), offset: z.number().int().nonnegative(), revision: z.number().int().nonnegative() }).optional(),
     // Capability at send time, inside the encrypted payload. New history can
     // resume waiting after reconnect without holding pre-receipt-era messages.
     expectsAcceptance: z.boolean().optional(),

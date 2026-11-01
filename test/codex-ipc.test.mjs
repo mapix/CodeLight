@@ -75,6 +75,17 @@ test('generation is checked after dispatch discovery and never sends a stale pla
   assert.equal(f.frames.filter(frame => frame.method === 'thread-follower-start-turn').length, 0);
 });
 
+test('a matched live follower routes directly to its owner while keeping epoch validation', async t => {
+  const f = await fixture(t);
+  const release = await f.adapter.subscribe('live-thread', () => {});
+  const discoveries = f.frames.filter(frame => frame.method === 'thread-owner-discovery').length;
+  await f.adapter.send('live-thread', 'fixture input', 'live-owner-command', 'local:desktop-owner');
+  assert.equal(f.frames.filter(frame => frame.method === 'thread-owner-discovery').length, discoveries);
+  assert.equal(f.frames.find(frame => frame.method === 'thread-follower-start-turn')?.targetClientId, 'desktop-owner');
+  await assert.rejects(f.adapter.send('live-thread', 'fixture stale', 'stale-live-owner-command', 'local:other-owner'), { code: 'source-epoch-changed' });
+  release();
+});
+
 test('model settings read and update use the original follower versions and explicit CAS without starting a turn', async t => {
   const f = await fixture(t, {}, (frame, socket) => {
     if (frame.method === 'thread-follower-read-model-settings') { reply(socket, frame, { settings: { model: 'fixture-model', reasoningEffort: 'medium', modelProvider: 'fixture-provider' } }); return true; }
@@ -334,7 +345,7 @@ test('announced oversized frame is rejected before allocating its payload', asyn
   const header = Buffer.alloc(4); header.writeUInt32LE(513);
   [...sockets][0].write(header);
   await until(() => adapter.socket === null);
-  assert.equal(adapter.buffer.length, 0);
+  assert.equal(adapter.frameBody, null);
 });
 
 test('owner disconnection rediscovers and subscribes to the new existing owner', async (t) => {
