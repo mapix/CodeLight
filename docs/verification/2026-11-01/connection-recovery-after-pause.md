@@ -49,5 +49,6 @@ sequenceDiagram
 62 targeted mobile regressions passed, including cold error recovery, coalesced
 selection, repeated reconnect status/proof handling, both loading surfaces,
 same-peer versus different-peer selection and queued visible-session generations.
-All bridge/mobile/relay typechecks and bridge lint passed. Native 116 acceptance
-and the new 0.5.8 publication remain pending at this checkpoint.
+All bridge/mobile/relay typechecks and bridge lint passed. The later native 116
+acceptance and public 0.5.8 checks are recorded in
+[the release verification](../2026-11-02/release-0.5.8.md).

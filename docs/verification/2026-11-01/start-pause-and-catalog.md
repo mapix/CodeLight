@@ -48,7 +48,8 @@ real Pause, the app stayed open and all helper/database/tunnel children exited;
 Start enabled and the status became Paused. A real Start reopened exactly one
 service with its owned children, local health returned 200, and persisted identity
 files and account secret matched. Phone build 2026110115 built and installed.
-Physical phone cold-entry acceptance is pending.
+The subsequent recovery fix, physical phone acceptance and publication are
+recorded in [the 0.5.8 release verification](../2026-11-02/release-0.5.8.md).
 
 ## Release privacy
 
